@@ -108,9 +108,23 @@ function makeEnv() {
       DigestAlgorithm: { SHA_256: 'sha256' },
       computeDigest: (_, s) => Array.from(crypto.createHash('sha256').update(s).digest()),
       base64EncodeWebSafe: (bytes) => Buffer.from(bytes).toString('base64url'),
-      formatDate: (d) => d.toISOString().replace('T', ' ').slice(0, 19)
+      formatDate: (d) => d.toISOString().replace('T', ' ').slice(0, 19),
+      base64Decode: (b64) => Array.from(Buffer.from(b64, 'base64')),
+      base64Encode: (bytes) => Buffer.from(bytes).toString('base64'),
+      newBlob: (bytes, type, name) => ({ getBytes: () => bytes, getContentType: () => type, getName: () => name })
     },
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) },
+    DriveApp: (() => {
+      const files = {};
+      let n = 0;
+      const folder = { getId: () => 'folder-1', createFile: (blob) => { const id = 'file-' + (++n); files[id] = blob; return { getId: () => id }; } };
+      return {
+        _files: files,
+        createFolder: () => folder,
+        getFolderById: () => folder,
+        getFileById: (id) => ({ getBlob: () => files[id] })
+      };
+    })(),
     Session: { getEffectiveUser: () => ({ getEmail: () => 'osama@foodlabs.com.kw' }) },
     ContentService: {
       MimeType: { JSON: 'json' },
@@ -121,6 +135,7 @@ function makeEnv() {
   vm.runInContext(fs.readFileSync(__dirname + '/../backend/Code.gs', 'utf8'), ctx);
 
   const exp = Math.floor(Date.now() / 1000) + 3600;
+  ctx.__drive = ctx.DriveApp;
   function addToken(tok, email, extra = {}) {
     tokenInfo[tok] = Object.assign({
       aud: '496334927044-7u4a914om1dbv4qb7j6bfr0rmr0kggdi.apps.googleusercontent.com',

@@ -11,6 +11,9 @@ def fake_token(email, name):
     body = base64.urlsafe_b64encode(json.dumps({'email': email, 'name': name, 'exp': int(time.time()) + 3600}).encode()).decode().rstrip('=')
     return 'fake.' + body + '.sig'
 
+QR_STUB = """
+window.qrcode = function () { return { addData: function () {}, make: function () {}, createSvgTag: function () { return '<svg viewBox="0 0 10 10"><rect width="10" height="10"/></svg>'; } }; };
+"""
 GSI_STUB = """
 window.google = { accounts: { id: {
   initialize: function (c) { window.__gsi = c; },
@@ -31,6 +34,8 @@ try:
             ctx = browser.new_context(viewport=viewport)
             ctx.add_init_script('window.__TOKEN = %s;' % json.dumps(fake_token(email, name)))
             ctx.route('**/gsi/client', lambda r: r.fulfill(status=200, content_type='text/javascript', body=GSI_STUB))
+            ctx.route('**/qrcode.min.js', lambda r: r.fulfill(status=200, content_type='text/javascript', body=QR_STUB))
+            ctx.route('**/html5-qrcode.min.js', lambda r: r.fulfill(status=200, content_type='text/javascript', body='window.Html5Qrcode=function(){this.start=function(){return Promise.reject(new Error("NotAllowedError Permission"))};this.stop=function(){return Promise.resolve()};this.clear=function(){}};'))
             ctx.route('**/config.js*', lambda r: r.fulfill(status=200, content_type='text/javascript',
                 body="window.FAS_CONFIG={clientId:'x',backendUrl:'http://localhost:8790/exec'};"))
             pg = ctx.new_page()
@@ -121,6 +126,126 @@ try:
         pg.wait_for_selector('table.datatable >> text=rima@foodlabs.com.kw')
         pg.wait_for_timeout(800)
         assert len(calls) == 1, calls
+
+        # ---------------- phase 2: lists for the form
+        add('Departments', fill_name('Kitchen'))
+        add('Asset types', lambda: (pg.fill('.drawer .field:has(label:has-text("Name")) input', 'Oven'),
+                                    pg.select_option('.drawer .field:has(label:has-text("Category")) select', label='Kitchen equipment')))
+        def fill_count_user():
+            pg.fill('.drawer .field:has(label:has-text("Google email")) input', 'count1@foodlabs.com.kw')
+            pg.fill('.drawer .field:has(label:has-text("Name")) input', 'Count One')
+            pg.select_option('.drawer .field:has(label:has-text("Role")) select', 'CountTeam')
+        add('Users', fill_count_user)
+        pg.reload(); pg.wait_for_selector('nav >> text=Labels')
+
+        # Labels: create a batch, print free labels, open the count
+        pg.click('nav >> text=Labels')
+        pg.fill('.field:has(label:has-text("How many labels")) input', '20')
+        pg.click('text=Create batch')
+        pg.wait_for_selector('td >> text=FL-000001 to FL-000020')
+        pg.evaluate("window.__printed = 0; HTMLIFrameElement.prototype.__p = 1;")
+        pg.click('td >> text=Print')
+        pg.wait_for_selector('.dialog')
+        pg.evaluate("""() => { const orig = document.body.appendChild.bind(document.body);
+          document.body.appendChild = (el) => { const r = orig(el); if (el.tagName === 'IFRAME') { el.contentWindow.print = () => { window.__printed = el.contentWindow.document.querySelectorAll('.l').length; window.__css = el.contentWindow.document.querySelector('style').textContent; }; } return r; }; }""")
+        pg.click('.dialog footer >> text=Print')
+        pg.wait_for_function('window.__printed > 0')
+        assert pg.evaluate('window.__printed') == 20, pg.evaluate('window.__printed')
+        assert '@page{size:50mm 25mm' in pg.evaluate('window.__css')
+        pg.screenshot(path=f'{SHOTS}/09-labels.png')
+        pg.click('text=Open the count')
+        pg.wait_for_selector('text=Close the count')
+
+        # Count team registers a blank label on a phone
+        ct = page_for('count1@foodlabs.com.kw', 'Count One', {'width': 390, 'height': 844})
+        ct.goto('http://localhost:8791/index.html#/scan')
+        ct.click('#fake-google')
+        ct.wait_for_selector('.scaninput')
+        assert not ct.is_visible('nav >> text=Labels')
+        ct.fill('.scaninput', 'hello'); ct.press('.scaninput', 'Enter')
+        ct.wait_for_selector('.error >> text=not a Foodlabs asset code')
+        ct.fill('.scaninput', 'FL-000500'); ct.press('.scaninput', 'Enter')
+        ct.wait_for_selector('.error >> text=never printed')
+        ct.click('text=Start camera')
+        ct.wait_for_selector('#toast.show >> text=Allow camera access')
+        ct.fill('.scaninput', 'fl-000001'); ct.press('.scaninput', 'Enter')
+        ct.wait_for_selector('.regform')
+        ct.click('text=Register FL-000001')
+        ct.wait_for_selector('.regform .error >> text=Fill in')
+        ct.select_option('.regform .field:has(label:has-text("Category")) select', label='Kitchen equipment')
+        ct.select_option('.regform .field:has(label:has-text("Type")) select', label='Oven')
+        assert ct.input_value('.regform .field:has(label:has-text("Name")) input') == 'Oven'
+        ct.select_option('.regform .field:has(label:has-text("Location")) select', label='Salwa')
+        ct.select_option('.regform .field:has(label:has-text("Department")) select', label='Kitchen')
+        ct.select_option('.regform .field:has(label:has-text("Condition")) select', 'Used')
+        ct.click('summary >> text=More details')
+        ct.fill('.regform .field:has(label:has-text("Make")) input', 'Rational')
+        ct.fill('.regform .field:has(label:has-text("Serial number")) input', 'SN-123')
+        import struct, zlib
+        def png():
+            raw = b'\x00' + b'\xff\x00\x00' * 4
+            def chunk(t, d): return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
+            return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 4, 4, 8, 2, 0, 0, 0)) + chunk(b'IDAT', zlib.compress(raw * 4)) + chunk(b'IEND', b'')
+        ct.set_input_files('.regform input[type=file]', files=[{'name': 'oven.png', 'mimeType': 'image/png', 'buffer': png()}])
+        ct.wait_for_selector('.thumb img')
+        ct.screenshot(path=f'{SHOTS}/10-register-phone.png', full_page=True)
+        ct.click('text=Register FL-000001')
+        ct.wait_for_selector('.notice >> text=FL-000001 registered')
+        ct.wait_for_selector('.assetcard >> text=Under review')
+        assert not ct.is_visible('.assetcard >> text=Cost')
+        ct.click('.photo')
+        ct.wait_for_selector('.photos img')
+        ct.screenshot(path=f'{SHOTS}/11-registered-phone.png', full_page=True)
+        ct.fill('.scaninput', 'FL-000002'); ct.press('.scaninput', 'Enter')
+        ct.wait_for_selector('.regform')
+        ct.select_option('.regform .field:has(label:has-text("Category")) select', label='Kitchen equipment')
+        ct.select_option('.regform .field:has(label:has-text("Type")) select', label='Oven')
+        ct.select_option('.regform .field:has(label:has-text("Location")) select', label='Salwa')
+        ct.select_option('.regform .field:has(label:has-text("Department")) select', label='Kitchen')
+        ct.select_option('.regform .field:has(label:has-text("Condition")) select', 'Used')
+        ct.click('text=Register FL-000002')
+        ct.wait_for_selector('.notice >> text=FL-000002 registered')
+
+        # Accounting: import the old register, link both ovens to one line
+        csv_text = 'LineId,Source,Name,LocationRaw,LocationSuggested,PurchaseDate,Cost,LifeMonths,AccumDeprDec2026,NbvDec2026,RemainingMonths,Flags\n' \
+                   'OLD-EQP1,Old register,"Ovens (2 pcs)",HOF,Head office,2023-01-10,1000,60,600,400,24,Several units on one line\n' \
+                   'NEW-001,New register,Shop fit-out,B.Salmiya,Boba Salmiya,2025-01-05,5000,60,1000,4000,48,\n'
+        pg.reload(); pg.wait_for_selector('nav >> text=Matching')
+        pg.click('nav >> text=Matching')
+        pg.wait_for_selector('text=Import the old register')
+        pg.set_input_files('input[type=file]', files=[{'name': 'legacy.csv', 'mimeType': 'text/csv', 'buffer': csv_text.encode()}])
+        pg.wait_for_selector('.notice >> text=2 lines')
+        pg.click('.actions >> text=Import')
+        pg.wait_for_selector('.match')
+        pg.click('button.pick >> text=Ovens (2 pcs)')
+        pg.check('label.pick:has-text("FL-000001") input')
+        pg.check('label.pick:has-text("FL-000002") input')
+        pg.wait_for_selector('.alloc')
+        assert pg.input_value('.allocrow:has-text("FL-000002") input >> nth=0') == '500'
+        pg.screenshot(path=f'{SHOTS}/12-matching.png', full_page=True)
+        pg.click('.detail button:text-is("Link")')
+        pg.wait_for_selector('#toast.show >> text=Linked', timeout=8000) if not pg.is_visible('.detail .error') else None
+        err = pg.inner_text('.detail .error') if pg.is_visible('.detail .error') else ''
+        assert not err, err
+        pg.wait_for_selector('.stat:has-text("Lines matched") >> text=1')
+        pg.click('button.pick >> text=Shop fit-out')
+        pg.click('summary >> text=No physical item')
+        pg.select_option('.detail details select >> nth=0', label='Leasehold improvements')
+        pg.select_option('.detail details select >> nth=1', label='Salwa')
+        pg.click('text=Record without label')
+        pg.wait_for_selector('.stat:has-text("Lines matched") >> text=2')
+
+        # Reconciliation
+        pg.click('nav >> text=Reconciliation')
+        pg.wait_for_selector('h2 >> text=Reconciliation with Xero')
+        pg.wait_for_selector('table.datatable >> text=(category has no asset account)')
+        assert pg.is_visible('table.datatable >> text=-1,600.000')
+        pg.screenshot(path=f'{SHOTS}/13-recon.png', full_page=True)
+
+        # Admin can see the value on scan
+        pg.goto('http://localhost:8791/index.html#/scan/FL-000001')
+        pg.wait_for_selector('.assetcard >> text=Active')
+        assert pg.is_visible('.assetcard >> text=500.000')
 
         # Manager on a phone
         mg = page_for('rima@foodlabs.com.kw', 'Rima', {'width': 390, 'height': 844})

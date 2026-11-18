@@ -1,5 +1,5 @@
 // Network first, cached copy only when offline. Data calls go to the backend and are never cached.
-var CACHE = 'fas-shell-v3';
+var CACHE = 'fas-shell-v4';
 var SHELL = ['./', 'index.html', 'config.js', 'assets/app.js', 'assets/styles.css', 'assets/icon.svg', 'manifest.webmanifest'];
 
 self.addEventListener('install', function (e) {

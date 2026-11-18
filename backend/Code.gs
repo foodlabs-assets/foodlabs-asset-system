@@ -10,7 +10,7 @@
  * runs on another origin and cannot send Google cookies.
  */
 
-var APP_VERSION = '0.1.1';
+var APP_VERSION = '0.2.0';
 var TZ = 'Asia/Kuwait';
 
 var ROLES = ['Admin', 'Accounting', 'Management', 'Manager', 'Technician', 'CountTeam'];
@@ -20,6 +20,10 @@ var ADMIN_ROLES = ['Admin', 'Accounting'];
 
 var LOCATION_TYPES = ['Branch', 'Central kitchen', 'Office', 'Department', 'Warehouse'];
 var ASSET_KINDS = ['Tangible', 'Intangible'];
+var CONDITIONS = ['New', 'Used', 'Damaged'];
+var ASSET_STATUSES = ['Under review', 'Active', 'In maintenance', 'Disposed'];
+var FINANCE_ROLES = ['Admin', 'Accounting', 'Management'];
+var MATCH_STATUSES = ['Unmatched', 'Matched', 'Not found'];
 
 /**
  * Table definitions. Field types drive both server validation and the generic
@@ -97,6 +101,86 @@ var SCHEMA = {
       { name: 'Description', label: 'Description', type: 'text', readOnly: true }
     ]
   },
+  Makes: {
+    title: 'Makes', key: 'MakeId', prefix: 'MK', admin: true,
+    fields: [
+      { name: 'MakeId', label: 'ID', type: 'text', keyField: true, readOnly: true },
+      { name: 'Name', label: 'Name', type: 'text', required: true, unique: true },
+      { name: 'Status', label: 'Status', type: 'select', options: ['Approved', 'Pending review'], required: true, defaultValue: 'Approved' },
+      { name: 'Active', label: 'Active', type: 'bool', defaultValue: true }
+    ]
+  },
+  LabelTemplates: {
+    title: 'Label sizes', key: 'TemplateId', prefix: 'LT', admin: true,
+    fields: [
+      { name: 'TemplateId', label: 'ID', type: 'text', keyField: true, readOnly: true },
+      { name: 'Name', label: 'Name', type: 'text', required: true, unique: true },
+      { name: 'WidthMm', label: 'Width (mm)', type: 'number', required: true, min: 15, max: 150 },
+      { name: 'HeightMm', label: 'Height (mm)', type: 'number', required: true, min: 10, max: 150 },
+      { name: 'Active', label: 'Active', type: 'bool', defaultValue: true }
+    ]
+  },
+  XeroBalances: {
+    title: 'Xero balances', key: 'Account', admin: true,
+    fields: [
+      { name: 'Account', label: 'Xero account', type: 'text', required: true, keyField: true },
+      { name: 'Balance', label: 'Balance at 31 Dec 2026', type: 'number', required: true },
+      { name: 'Notes', label: 'Notes', type: 'text' }
+    ]
+  },
+  LabelBatches: {
+    title: 'Label batches', key: 'BatchId', prefix: 'LB', system: false,
+    fields: [
+      { name: 'BatchId', label: 'Batch', type: 'text', keyField: true },
+      { name: 'FromNo', label: 'From', type: 'number' },
+      { name: 'ToNo', label: 'To', type: 'number' },
+      { name: 'Quantity', label: 'Quantity', type: 'number' },
+      { name: 'Notes', label: 'Notes', type: 'text' }
+    ]
+  },
+  Assets: {
+    title: 'Assets', key: 'AssetCode',
+    fields: [
+      { name: 'AssetCode', label: 'Asset code', type: 'text', keyField: true },
+      { name: 'Name', label: 'Name', type: 'text', required: true },
+      { name: 'CategoryId', label: 'Category', type: 'ref', table: 'Categories', required: true },
+      { name: 'TypeId', label: 'Type', type: 'ref', table: 'Types', required: true },
+      { name: 'LocationId', label: 'Location', type: 'ref', table: 'Locations', required: true },
+      { name: 'DepartmentId', label: 'Department', type: 'ref', table: 'Departments', required: true },
+      { name: 'BrandId', label: 'Brand', type: 'ref', table: 'Brands' },
+      { name: 'MakeId', label: 'Make', type: 'ref', table: 'Makes' },
+      { name: 'Model', label: 'Model', type: 'text' },
+      { name: 'SerialNo', label: 'Serial number', type: 'text' },
+      { name: 'Condition', label: 'Condition', type: 'select', options: CONDITIONS, required: true },
+      { name: 'Status', label: 'Status', type: 'select', options: ASSET_STATUSES },
+      { name: 'Notes', label: 'Notes', type: 'text' },
+      { name: 'Photos', label: 'Photos', type: 'text' },
+      { name: 'RegisteredAt', label: 'Registered at', type: 'text' },
+      { name: 'RegisteredBy', label: 'Registered by', type: 'text' },
+      { name: 'LegacyLineIds', label: 'Old register lines', type: 'text', finance: true },
+      { name: 'PurchaseDate', label: 'Purchase date', type: 'text', finance: true },
+      { name: 'Cost', label: 'Cost', type: 'number', finance: true },
+      { name: 'OpeningAccumDepr', label: 'Accumulated depreciation at 31 Dec 2026', type: 'number', finance: true },
+      { name: 'LifeMonths', label: 'Useful life (months)', type: 'number', finance: true },
+      { name: 'RemainingMonths', label: 'Remaining months at 1 Jan 2027', type: 'number', finance: true },
+      { name: 'Supplier', label: 'Supplier', type: 'text', finance: true },
+      { name: 'InvoiceNo', label: 'Invoice number', type: 'text', finance: true },
+      { name: 'MatchedAt', label: 'Matched at', type: 'text', finance: true },
+      { name: 'MatchedBy', label: 'Matched by', type: 'text', finance: true }
+    ]
+  },
+  LegacyLines: {
+    title: 'Old register lines', key: 'LineId', finance: true,
+    fields: [
+      { name: 'LineId' }, { name: 'Source' }, { name: 'OldAssetId' }, { name: 'Name' }, { name: 'GroupCode' },
+      { name: 'GroupName' }, { name: 'LocationRaw' }, { name: 'LocationSuggested' }, { name: 'PurchaseDate' },
+      { name: 'Cost', type: 'number' }, { name: 'LifeMonths', type: 'number' }, { name: 'MonthlyDepr', type: 'number' },
+      { name: 'NbvSep2026', type: 'number' }, { name: 'DeprOctDec2026', type: 'number' },
+      { name: 'AccumDeprDec2026', type: 'number' }, { name: 'NbvDec2026', type: 'number' },
+      { name: 'RemainingMonths', type: 'number' }, { name: 'Flags' },
+      { name: 'MatchStatus' }, { name: 'MatchedAssets' }, { name: 'MatchNote' }
+    ]
+  },
   AuditLog: {
     title: 'Audit log', system: true,
     fields: [
@@ -113,8 +197,12 @@ var DEFAULT_SETTINGS = [
   ['CutoverDate', '2027-01-01', 'System start date; opening balances are as at the day before'],
   ['LabelPrefix', 'FL', 'Prefix printed before the running asset number'],
   ['CountReminderDays', '', 'Days between stock-count reminders to managers'],
-  ['WarrantyAlertDays', '', 'Days before warranty end to send an alert']
+  ['WarrantyAlertDays', '', 'Days before warranty end to send an alert'],
+  ['CountTeamOpen', 'FALSE', 'TRUE while the count team may register assets on blank labels'],
+  ['PhotoFolderId', '', 'Drive folder for asset photos (filled automatically)']
 ];
+
+var SEED_LABEL_TEMPLATES = [['50 x 25 mm', 50, 25], ['60 x 40 mm', 60, 40]];
 
 /** Approved category list, seeded once; useful lives and accounts are filled later in admin. */
 var SEED_CATEGORIES = [
@@ -156,6 +244,13 @@ function setup() {
       appendRow_('Settings', { Key: s[0], Value: s[1], Description: s[2], UpdatedAt: now_(), UpdatedBy: 'setup' });
     }
   });
+
+  if (readTable_('LabelTemplates').length === 0) {
+    SEED_LABEL_TEMPLATES.forEach(function (t, i) {
+      appendRow_('LabelTemplates', { TemplateId: 'LT-' + pad_(i + 1, 3), Name: t[0], WidthMm: t[1], HeightMm: t[2],
+        Active: true, UpdatedAt: now_(), UpdatedBy: 'setup' });
+    });
+  }
 
   if (readTable_('Categories').length === 0) {
     SEED_CATEGORIES.forEach(function (c, i) {
@@ -207,7 +302,8 @@ function formatSheets() {
   return 'Formatted';
 }
 
-var SHEET_ORDER = ['Users', 'Locations', 'Departments', 'Brands', 'Categories', 'Types', 'Settings', 'AuditLog'];
+var SHEET_ORDER = ['Assets', 'LegacyLines', 'LabelBatches', 'Users', 'Locations', 'Departments', 'Brands',
+  'Categories', 'Types', 'Makes', 'LabelTemplates', 'XeroBalances', 'Settings', 'AuditLog'];
 var BRAND_GREEN = '#0f5e4b';
 
 function formatBook_(ss) {
@@ -321,6 +417,18 @@ function handle_(req) {
     case 'me': return { user: publicUser_(user), version: APP_VERSION };
     case 'meta': return meta_(user);
     case 'bootstrap': return bootstrap_(user);
+    case 'lookup': return lookupAsset_(user, p.code);
+    case 'register': return registerAsset_(user, p.code, p.asset, p.photos || [], p.newMake);
+    case 'photo': return photo_(user, p.code, p.fileId);
+    case 'createLabelBatch': return createLabelBatch_(user, p.quantity, p.notes);
+    case 'setCountWindow': return setCountWindow_(user, p.open === true);
+    case 'importLegacy': return importLegacy_(user, p.rows || []);
+    case 'match': return matchAssets_(user, p.lineId, p.allocations || []);
+    case 'unmatch': return unmatchLine_(user, p.lineId);
+    case 'markLine': return markLine_(user, p.lineId, p.status, p.note);
+    case 'createFromLine': return createFromLine_(user, p.lineId, p.asset || {});
+    case 'setFinance': return setFinance_(user, p.code, p.values || {});
+    case 'recon': return recon_(user);
     case 'list': return listTable_(user, p.table);
     case 'save': return saveRecord_(user, p.table, p.record, p.isNew === true);
     case 'audit': return auditFor_(user, p.table, p.id);
@@ -385,7 +493,9 @@ function publicUser_(u) {
     locations: ids,
     locationNames: ids.map(function (id) { return names[id] || id; }),
     dashboardAccess: truthy_(u.DashboardAccess),
-    canAdmin: ADMIN_ROLES.indexOf(u.Role) !== -1
+    canAdmin: ADMIN_ROLES.indexOf(u.Role) !== -1,
+    isFinance: FINANCE_ROLES.indexOf(u.Role) !== -1,
+    canRegister: canRegister_(u)
   };
 }
 
@@ -418,7 +528,35 @@ function bootstrap_(user) {
     data[name] = readTable_(name).map(function (r) { return pick_(r, def); });
   });
   meta.data = data;
+  meta.lists = lists_();
+  meta.settings = { countTeamOpen: countOpen_(), labelPrefix: labelPrefix_() };
+  if (ADMIN_ROLES.indexOf(user.Role) !== -1) {
+    meta.labelBatches = readTable_('LabelBatches').map(function (r) { return pick_(r, SCHEMA.LabelBatches); });
+    meta.assets = readTable_('Assets').map(function (r) { return assetView_(r, true); });
+    meta.legacy = readTable_('LegacyLines').map(function (r) { return pick_(r, SCHEMA.LegacyLines); });
+  }
   return meta;
+}
+
+/** Pick lists everyone needs for forms and for showing names instead of ids. */
+function lists_() {
+  function simple(table, extra) {
+    var def = SCHEMA[table];
+    return readTable_(table).filter(function (r) { return truthy_(r.Active); }).map(function (r) {
+      var o = { id: String(r[def.key]), name: String(r.Name) };
+      (extra || []).forEach(function (k) { o[k] = r[k]; });
+      return o;
+    });
+  }
+  return {
+    Categories: simple('Categories', ['AssetKind']),
+    Types: simple('Types', ['CategoryId']),
+    Locations: simple('Locations', ['Type', 'Brand']),
+    Departments: simple('Departments'),
+    Brands: simple('Brands'),
+    Makes: simple('Makes', ['Status']),
+    LabelTemplates: simple('LabelTemplates', ['WidthMm', 'HeightMm'])
+  };
 }
 
 function listTable_(user, table) {
@@ -502,6 +640,432 @@ function adminDef_(table) {
   if (!def || !def.admin) throw appError_('BAD_REQUEST', 'Unknown table.');
   return def;
 }
+
+// ---------------------------------------------------------------------------
+// Assets, labels and the initial count
+// ---------------------------------------------------------------------------
+
+function labelPrefix_() { return String(setting_('LabelPrefix') || 'FL').trim().toUpperCase(); }
+function countOpen_() { return truthy_(String(setting_('CountTeamOpen') || '').toUpperCase()); }
+function setting_(key) {
+  var row = findBy_(readTable_('Settings'), 'Key', key);
+  return row ? row.Value : '';
+}
+function isFinance_(user) { return FINANCE_ROLES.indexOf(user.Role) !== -1; }
+function canRegister_(user) {
+  return ADMIN_ROLES.indexOf(user.Role) !== -1 || (user.Role === 'CountTeam' && countOpen_());
+}
+
+/** Codes look like FL-000123 for labelled assets and FLX-000123 for assets with no label. */
+function parseCode_(code) {
+  var c = String(code || '').trim().toUpperCase();
+  var p = labelPrefix_();
+  var m = c.match(new RegExp('^' + p + '(X?)-(\\d{6})$'));
+  if (!m) return null;
+  return { code: c, noLabel: m[1] === 'X', number: Number(m[2]) };
+}
+
+function isIssued_(num) {
+  return readTable_('LabelBatches').some(function (b) { return num >= Number(b.FromNo) && num <= Number(b.ToNo); });
+}
+
+/** What the caller may see of an asset. Values and accounts only for finance roles. */
+function assetView_(r, finance) {
+  var out = {};
+  SCHEMA.Assets.fields.forEach(function (f) {
+    if (f.finance && !finance) return;
+    out[f.name] = r[f.name] === undefined ? '' : r[f.name];
+  });
+  out.Photos = splitIds_(r.Photos);
+  out.UpdatedAt = r.UpdatedAt || '';
+  return out;
+}
+
+function canSeeAsset_(user, asset) {
+  if (isFinance_(user) || user.Role === 'CountTeam') return true;
+  if (user.Role === 'Technician') return true;
+  return splitIds_(user.Locations).indexOf(String(asset.LocationId)) !== -1;
+}
+
+function lookupAsset_(user, code) {
+  var parsed = parseCode_(code);
+  if (!parsed) return { status: 'invalid', code: String(code || '') };
+  var asset = findBy_(readTable_('Assets'), 'AssetCode', parsed.code);
+  if (asset) {
+    if (!canSeeAsset_(user, asset)) return { status: 'elsewhere', code: parsed.code };
+    return { status: 'registered', code: parsed.code, asset: assetView_(asset, isFinance_(user)) };
+  }
+  if (parsed.noLabel || !isIssued_(parsed.number)) return { status: 'not_issued', code: parsed.code };
+  return { status: 'unregistered', code: parsed.code, canRegister: canRegister_(user) };
+}
+
+function registerAsset_(user, code, input, photos, newMake) {
+  if (!canRegister_(user)) {
+    throw appError_('FORBIDDEN', user.Role === 'CountTeam'
+      ? 'The count is closed. Ask accounting to open it.' : 'You cannot register assets.');
+  }
+  var parsed = parseCode_(code);
+  if (!parsed || parsed.noLabel) throw appError_('INVALID', 'That is not a Foodlabs label.');
+  if (!isIssued_(parsed.number)) throw appError_('INVALID', 'That label number was never printed.');
+  if (!input || typeof input !== 'object') throw appError_('INVALID', 'Nothing to save.');
+  if (photos.length > 4) throw appError_('INVALID', 'Up to 4 photos per asset.');
+
+  return withLock_(function () {
+    var rows = readTableFromSheet_('Assets');
+    if (findBy_(rows, 'AssetCode', parsed.code)) throw appError_('INVALID', 'This label is already registered.');
+
+    var rec = {};
+    ['Name', 'CategoryId', 'TypeId', 'LocationId', 'DepartmentId', 'BrandId', 'MakeId', 'Model', 'SerialNo', 'Condition', 'Notes']
+      .forEach(function (k) {
+        var f = fieldOf_('Assets', k);
+        rec[k] = coerce_(f, input[k]);
+        if (f.required && rec[k] === '') throw appError_('INVALID', f.label + ' is required.');
+      });
+    if (newMake && !rec.MakeId) rec.MakeId = ensureMake_(user, newMake);
+    checkRefs_('Assets', rec);
+    var type = findBy_(readTable_('Types'), 'TypeId', rec.TypeId);
+    if (type && String(type.CategoryId) !== String(rec.CategoryId)) throw appError_('INVALID', 'That type belongs to another category.');
+
+    rec.AssetCode = parsed.code;
+    rec.Status = 'Under review';
+    rec.RegisteredAt = now_();
+    rec.RegisteredBy = user.Email;
+    rec.Photos = savePhotos_(parsed.code, photos).join(',');
+    rec.UpdatedAt = rec.RegisteredAt;
+    rec.UpdatedBy = user.Email;
+    appendRow_('Assets', rec);
+    audit_(user.Email, 'Assets', parsed.code, 'create', '', '', 'registered at ' + rec.LocationId);
+    return { asset: assetView_(rec, isFinance_(user)) };
+  });
+}
+
+function ensureMake_(user, name) {
+  var clean = String(name || '').trim().replace(/\s+/g, ' ');
+  if (!clean) return '';
+  if (clean.length > 80) throw appError_('INVALID', 'Make name is too long.');
+  var makes = readTableFromSheet_('Makes');
+  var hit = findBy_(makes, 'Name', clean);
+  if (hit) return hit.MakeId;
+  var id = nextId_(makes, 'MakeId', 'MK');
+  appendRow_('Makes', { MakeId: id, Name: coerce_({ type: 'text', label: 'Make' }, clean), Status: 'Pending review',
+    Active: true, UpdatedAt: now_(), UpdatedBy: user.Email });
+  audit_(user.Email, 'Makes', id, 'create', '', '', clean + ' (pending review)');
+  return id;
+}
+
+function fieldOf_(table, name) {
+  return SCHEMA[table].fields.filter(function (f) { return f.name === name; })[0];
+}
+
+function checkRefs_(table, rec) {
+  SCHEMA[table].fields.forEach(function (f) {
+    if (f.type !== 'ref' || !rec[f.name]) return;
+    var refDef = SCHEMA[f.table];
+    if (!findBy_(readTable_(f.table), refDef.key, rec[f.name])) throw appError_('INVALID', f.label + ': unknown value.');
+  });
+}
+
+// ----- Photos: kept private in the owner's Drive, served through the backend only
+
+function photoFolder_() {
+  var id = setting_('PhotoFolderId');
+  if (id) { try { return DriveApp.getFolderById(id); } catch (e) { /* recreate below */ } }
+  var folder = DriveApp.createFolder('Foodlabs Asset System — Photos');
+  var row = findBy_(readTableFromSheet_('Settings'), 'Key', 'PhotoFolderId');
+  if (row) updateRow_('Settings', row.__row, { Value: folder.getId(), UpdatedAt: now_(), UpdatedBy: 'system' });
+  return folder;
+}
+
+function savePhotos_(code, photos) {
+  if (!photos.length) return [];
+  var folder = photoFolder_();
+  return photos.map(function (p, i) {
+    var m = String(p || '').match(/^data:image\/(jpeg|png|webp);base64,(.+)$/);
+    if (!m) throw appError_('INVALID', 'Photos must be JPEG, PNG or WebP images.');
+    var bytes = Utilities.base64Decode(m[2]);
+    if (bytes.length > 2500000) throw appError_('INVALID', 'A photo is too large.');
+    var blob = Utilities.newBlob(bytes, 'image/' + m[1], code + '-' + (i + 1) + '.' + (m[1] === 'jpeg' ? 'jpg' : m[1]));
+    return folder.createFile(blob).getId();
+  });
+}
+
+function photo_(user, code, fileId) {
+  var asset = findBy_(readTable_('Assets'), 'AssetCode', String(code || '').toUpperCase());
+  if (!asset || !canSeeAsset_(user, asset)) throw appError_('FORBIDDEN', 'You cannot see this asset.');
+  if (splitIds_(asset.Photos).indexOf(String(fileId)) === -1) throw appError_('NOT_FOUND', 'Photo not found.');
+  var file = DriveApp.getFileById(fileId);
+  var blob = file.getBlob();
+  return { dataUrl: 'data:' + blob.getContentType() + ';base64,' + Utilities.base64Encode(blob.getBytes()) };
+}
+
+// ----- Label stock
+
+function createLabelBatch_(user, quantity, notes) {
+  requireAdmin_(user);
+  var q = Math.floor(Number(quantity));
+  if (!(q >= 1 && q <= 2000)) throw appError_('INVALID', 'Print between 1 and 2000 labels at a time.');
+  return withLock_(function () {
+    var batches = readTableFromSheet_('LabelBatches');
+    var last = batches.reduce(function (m, b) { return Math.max(m, Number(b.ToNo) || 0); }, 0);
+    if (last + q > 999999) throw appError_('INVALID', 'Label numbers would run past 999999.');
+    var batch = { BatchId: nextId_(batches, 'BatchId', 'LB'), FromNo: last + 1, ToNo: last + q, Quantity: q,
+      Notes: coerce_({ type: 'text', label: 'Notes' }, notes || ''), UpdatedAt: now_(), UpdatedBy: user.Email };
+    appendRow_('LabelBatches', batch);
+    audit_(user.Email, 'LabelBatches', batch.BatchId, 'create', '', '', batch.FromNo + '-' + batch.ToNo);
+    return { batch: pick_(batch, SCHEMA.LabelBatches), prefix: labelPrefix_() };
+  });
+}
+
+function setCountWindow_(user, open) {
+  requireAdmin_(user);
+  return withLock_(function () {
+    var row = findBy_(readTableFromSheet_('Settings'), 'Key', 'CountTeamOpen');
+    var old = row.Value;
+    updateRow_('Settings', row.__row, { Value: open ? 'TRUE' : 'FALSE', UpdatedAt: now_(), UpdatedBy: user.Email });
+    audit_(user.Email, 'Settings', 'CountTeamOpen', 'update', 'Value', old, open ? 'TRUE' : 'FALSE');
+    return { countTeamOpen: open };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Old register: import, matching, reconciliation (accounting only)
+// ---------------------------------------------------------------------------
+
+function requireAccounting_(user) {
+  if (ADMIN_ROLES.indexOf(user.Role) === -1) throw appError_('FORBIDDEN', 'Only admin and accounting can do this.');
+}
+
+var LEGACY_NUMBERS = ['Cost', 'LifeMonths', 'MonthlyDepr', 'NbvSep2026', 'DeprOctDec2026', 'AccumDeprDec2026', 'NbvDec2026', 'RemainingMonths'];
+
+function importLegacy_(user, rows) {
+  requireAccounting_(user);
+  if (!rows.length) throw appError_('INVALID', 'The file has no lines.');
+  if (rows.length > 5000) throw appError_('INVALID', 'Too many lines in one file.');
+  return withLock_(function () {
+    var existing = readTableFromSheet_('LegacyLines');
+    if (existing.some(function (r) { return r.MatchStatus && r.MatchStatus !== 'Unmatched'; })) {
+      throw appError_('INVALID', 'Matching has started. The old register cannot be replaced now.');
+    }
+    var ids = {};
+    var clean = rows.map(function (r, i) {
+      var o = {};
+      SCHEMA.LegacyLines.fields.forEach(function (f) {
+        var v = r[f.name];
+        if (LEGACY_NUMBERS.indexOf(f.name) !== -1) {
+          o[f.name] = v === '' || v === null || v === undefined ? '' : Number(v);
+          if (o[f.name] !== '' && !isFinite(o[f.name])) throw appError_('INVALID', 'Line ' + (i + 2) + ': ' + f.name + ' is not a number.');
+        } else {
+          o[f.name] = coerce_({ type: 'text', label: f.name }, v === undefined ? '' : v);
+        }
+      });
+      if (!o.LineId) throw appError_('INVALID', 'Line ' + (i + 2) + ' has no LineId.');
+      if (ids[o.LineId]) throw appError_('INVALID', 'LineId ' + o.LineId + ' appears twice.');
+      ids[o.LineId] = true;
+      o.MatchStatus = 'Unmatched'; o.MatchedAssets = ''; o.MatchNote = '';
+      return o;
+    });
+    var sh = sheet_('LegacyLines');
+    if (sh.getLastRow() > 1) sh.getRange(2, 1, sh.getLastRow() - 1, sh.getLastColumn()).clearContent();
+    var headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+    sh.getRange(2, 1, clean.length, headers.length).setValues(clean.map(function (o) {
+      return headers.map(function (h) { return o[h] === undefined ? '' : o[h]; });
+    }));
+    invalidate_('LegacyLines');
+    audit_(user.Email, 'LegacyLines', '*', 'import', '', '', clean.length + ' lines');
+    return { count: clean.length, legacy: clean };
+  });
+}
+
+/**
+ * Links one old-register line to one or more counted assets. Each allocation names an asset
+ * and its share of cost and accumulated depreciation; shares must add up to the line.
+ */
+function matchAssets_(user, lineId, allocations) {
+  requireAccounting_(user);
+  if (!allocations.length) throw appError_('INVALID', 'Choose at least one asset.');
+  return withLock_(function () {
+    var lines = readTableFromSheet_('LegacyLines');
+    var line = findBy_(lines, 'LineId', lineId);
+    if (!line) throw appError_('NOT_FOUND', 'That old-register line was not found.');
+    if (line.MatchStatus === 'Matched') throw appError_('INVALID', 'That line is already matched. Undo it first.');
+    var assets = readTableFromSheet_('Assets');
+    var lineCost = Number(line.Cost) || 0, lineAccum = Number(line.AccumDeprDec2026) || 0;
+    var sumCost = 0, sumAccum = 0;
+    var targets = allocations.map(function (a) {
+      var asset = findBy_(assets, 'AssetCode', a.code);
+      if (!asset) throw appError_('NOT_FOUND', 'Asset ' + a.code + ' was not found.');
+      if (asset.Status !== 'Under review') throw appError_('INVALID', 'Asset ' + a.code + ' is already matched.');
+      var cost = round3_(Number(a.cost)), accum = round3_(Number(a.accum));
+      if (!isFinite(cost) || !isFinite(accum) || cost < 0 || accum < 0 || accum > cost + 0.0005) {
+        throw appError_('INVALID', 'Check the amounts for ' + a.code + '.');
+      }
+      sumCost += cost; sumAccum += accum;
+      return { asset: asset, cost: cost, accum: accum };
+    });
+    if (Math.abs(sumCost - lineCost) > 0.0015 || Math.abs(sumAccum - lineAccum) > 0.0015) {
+      throw appError_('INVALID', 'The shares must add up to the line: cost ' + lineCost.toFixed(3) + ', accumulated ' + lineAccum.toFixed(3) + '.');
+    }
+    var stamp = now_();
+    targets.forEach(function (t) {
+      var upd = {
+        LegacyLineIds: line.LineId, PurchaseDate: line.PurchaseDate, Cost: t.cost, OpeningAccumDepr: t.accum,
+        LifeMonths: line.LifeMonths, RemainingMonths: line.RemainingMonths, Status: 'Active',
+        MatchedAt: stamp, MatchedBy: user.Email, UpdatedAt: stamp, UpdatedBy: user.Email
+      };
+      updateRow_('Assets', t.asset.__row, upd);
+      audit_(user.Email, 'Assets', t.asset.AssetCode, 'match', 'LegacyLineIds', '', line.LineId + ' cost ' + t.cost + ' accum ' + t.accum);
+    });
+    updateRow_('LegacyLines', line.__row, { MatchStatus: 'Matched', MatchedAssets: targets.map(function (t) { return t.asset.AssetCode; }).join(',') });
+    audit_(user.Email, 'LegacyLines', line.LineId, 'match', 'MatchedAssets', '', targets.map(function (t) { return t.asset.AssetCode; }).join(','));
+    return financeSnapshot_();
+  });
+}
+
+function unmatchLine_(user, lineId) {
+  requireAccounting_(user);
+  return withLock_(function () {
+    var lines = readTableFromSheet_('LegacyLines');
+    var line = findBy_(lines, 'LineId', lineId);
+    if (!line) throw appError_('NOT_FOUND', 'That old-register line was not found.');
+    var assets = readTableFromSheet_('Assets');
+    splitIds_(line.MatchedAssets).forEach(function (code) {
+      var a = findBy_(assets, 'AssetCode', code);
+      if (!a) return;
+      var noLabel = parseCode_(code) && parseCode_(code).noLabel;
+      updateRow_('Assets', a.__row, {
+        LegacyLineIds: '', PurchaseDate: '', Cost: '', OpeningAccumDepr: '', LifeMonths: '', RemainingMonths: '',
+        Status: noLabel ? 'Disposed' : 'Under review', MatchedAt: '', MatchedBy: '', UpdatedAt: now_(), UpdatedBy: user.Email
+      });
+      audit_(user.Email, 'Assets', code, 'unmatch', 'LegacyLineIds', line.LineId, '');
+    });
+    updateRow_('LegacyLines', line.__row, { MatchStatus: 'Unmatched', MatchedAssets: '', MatchNote: '' });
+    audit_(user.Email, 'LegacyLines', line.LineId, 'unmatch', 'MatchStatus', line.MatchStatus, 'Unmatched');
+    return financeSnapshot_();
+  });
+}
+
+function markLine_(user, lineId, status, note) {
+  requireAccounting_(user);
+  if (status !== 'Not found' && status !== 'Unmatched') throw appError_('INVALID', 'Unknown status.');
+  return withLock_(function () {
+    var line = findBy_(readTableFromSheet_('LegacyLines'), 'LineId', lineId);
+    if (!line) throw appError_('NOT_FOUND', 'That old-register line was not found.');
+    if (line.MatchStatus === 'Matched') throw appError_('INVALID', 'Undo the match first.');
+    var n = coerce_({ type: 'text', label: 'Note' }, note || '');
+    updateRow_('LegacyLines', line.__row, { MatchStatus: status, MatchNote: n });
+    audit_(user.Email, 'LegacyLines', lineId, 'update', 'MatchStatus', line.MatchStatus, status + (n ? ' — ' + n : ''));
+    return financeSnapshot_();
+  });
+}
+
+/** Records an asset with no label (fit-out, software, rights) straight from an old-register line. */
+function createFromLine_(user, lineId, input) {
+  requireAccounting_(user);
+  return withLock_(function () {
+    var line = findBy_(readTableFromSheet_('LegacyLines'), 'LineId', lineId);
+    if (!line) throw appError_('NOT_FOUND', 'That old-register line was not found.');
+    if (line.MatchStatus === 'Matched') throw appError_('INVALID', 'That line is already matched.');
+    var cat = findBy_(readTable_('Categories'), 'CategoryId', input.CategoryId);
+    if (!cat) throw appError_('INVALID', 'Choose a category.');
+    if (!findBy_(readTable_('Locations'), 'LocationId', input.LocationId)) throw appError_('INVALID', 'Choose a location.');
+    var assets = readTableFromSheet_('Assets');
+    var p = labelPrefix_() + 'X-';
+    var max = 0;
+    assets.forEach(function (a) { var m = String(a.AssetCode).match(new RegExp('^' + p + '(\\d{6})$')); if (m) max = Math.max(max, Number(m[1])); });
+    var code = p + pad_(max + 1, 6);
+    var stamp = now_();
+    var rec = {
+      AssetCode: code, Name: coerce_({ type: 'text', label: 'Name' }, input.Name || line.Name), CategoryId: cat.CategoryId,
+      TypeId: input.TypeId || '', LocationId: input.LocationId, DepartmentId: input.DepartmentId || '', BrandId: input.BrandId || '',
+      Condition: 'Used', Status: 'Active', Notes: 'No label · from ' + line.LineId, RegisteredAt: stamp, RegisteredBy: user.Email,
+      LegacyLineIds: line.LineId, PurchaseDate: line.PurchaseDate, Cost: line.Cost, OpeningAccumDepr: line.AccumDeprDec2026,
+      LifeMonths: line.LifeMonths, RemainingMonths: line.RemainingMonths, MatchedAt: stamp, MatchedBy: user.Email,
+      UpdatedAt: stamp, UpdatedBy: user.Email
+    };
+    appendRow_('Assets', rec);
+    updateRow_('LegacyLines', line.__row, { MatchStatus: 'Matched', MatchedAssets: code });
+    audit_(user.Email, 'Assets', code, 'create', '', '', 'no-label asset from ' + line.LineId);
+    return financeSnapshot_();
+  });
+}
+
+/** Accounting fills or corrects the money side of an asset (e.g. a counted asset with no old line). */
+function setFinance_(user, code, values) {
+  requireAccounting_(user);
+  return withLock_(function () {
+    var assets = readTableFromSheet_('Assets');
+    var a = findBy_(assets, 'AssetCode', String(code || '').toUpperCase());
+    if (!a) throw appError_('NOT_FOUND', 'Asset not found.');
+    var upd = {}, changes = [];
+    ['PurchaseDate', 'Cost', 'OpeningAccumDepr', 'LifeMonths', 'RemainingMonths', 'Supplier', 'InvoiceNo'].forEach(function (k) {
+      if (values[k] === undefined) return;
+      var f = fieldOf_('Assets', k);
+      var v = coerce_(f, values[k]);
+      if (k === 'PurchaseDate' && v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) throw appError_('INVALID', 'Purchase date must be YYYY-MM-DD.');
+      if (normForCompare_(a[k]) !== normForCompare_(v)) { upd[k] = v; changes.push([k, a[k], v]); }
+    });
+    var cost = upd.Cost !== undefined ? upd.Cost : a.Cost;
+    var accum = upd.OpeningAccumDepr !== undefined ? upd.OpeningAccumDepr : a.OpeningAccumDepr;
+    if (cost !== '' && accum !== '' && Number(accum) > Number(cost) + 0.0005) throw appError_('INVALID', 'Accumulated depreciation cannot exceed cost.');
+    if (values.activate === true) {
+      if (cost === '' || Number(cost) <= 0) throw appError_('INVALID', 'Enter the cost before confirming.');
+      if (a.Status === 'Under review') { upd.Status = 'Active'; changes.push(['Status', a.Status, 'Active']); upd.MatchedAt = now_(); upd.MatchedBy = user.Email; }
+    }
+    if (!changes.length) return financeSnapshot_();
+    upd.UpdatedAt = now_(); upd.UpdatedBy = user.Email;
+    updateRow_('Assets', a.__row, upd);
+    changes.forEach(function (c) { audit_(user.Email, 'Assets', a.AssetCode, 'update', c[0], normForCompare_(c[1]), normForCompare_(c[2])); });
+    return financeSnapshot_();
+  });
+}
+
+function financeSnapshot_() {
+  return {
+    assets: readTableFromSheet_('Assets').map(function (r) { return assetView_(r, true); }),
+    legacy: readTableFromSheet_('LegacyLines').map(function (r) { return pick_(r, SCHEMA.LegacyLines); })
+  };
+}
+
+/** App totals by Xero account against the balances accounting enters from Xero. */
+function recon_(user) {
+  requireAccounting_(user);
+  var cats = readTable_('Categories');
+  var catBy = {};
+  cats.forEach(function (c) { catBy[c.CategoryId] = c; });
+  var totals = {};
+  function add(acct, kind, amount, code) {
+    var key = acct || (kind === 'cost' ? '(category has no asset account)' : '(category has no accumulated depreciation account)');
+    var t = totals[key] || (totals[key] = { account: key, cost: 0, accum: 0, assets: 0, kinds: {} });
+    t[kind] += amount; t.kinds[kind] = true; if (kind === 'cost') t.assets += 1;
+  }
+  var underReview = 0;
+  readTable_('Assets').forEach(function (a) {
+    if (a.Status === 'Disposed') return;
+    if (a.Status === 'Under review') { underReview += 1; return; }
+    var c = catBy[a.CategoryId] || {};
+    add(c.AssetAccount, 'cost', Number(a.Cost) || 0, a.AssetCode);
+    add(c.AccumDeprAccount, 'accum', Number(a.OpeningAccumDepr) || 0, a.AssetCode);
+  });
+  var xero = {};
+  readTable_('XeroBalances').forEach(function (x) { xero[x.Account] = Number(x.Balance) || 0; });
+  var accounts = Object.keys(totals).concat(Object.keys(xero).filter(function (k) { return !totals[k]; }));
+  var rows = accounts.sort().map(function (k) {
+    var t = totals[k] || { cost: 0, accum: 0, assets: 0, kinds: {} };
+    var app = round3_(t.kinds.accum && !t.kinds.cost ? -t.accum : t.cost - (t.kinds.cost && t.kinds.accum ? t.accum : 0));
+    var hasX = Object.prototype.hasOwnProperty.call(xero, k);
+    return { account: k, app: app, xero: hasX ? round3_(xero[k]) : null, difference: hasX ? round3_(app - xero[k]) : null, assets: t.assets };
+  });
+  var legacy = readTable_('LegacyLines');
+  function sumLines(status) {
+    return legacy.filter(function (l) { return l.MatchStatus === status; }).reduce(function (s, l) {
+      s.lines += 1; s.cost += Number(l.Cost) || 0; s.accum += Number(l.AccumDeprDec2026) || 0; s.nbv += Number(l.NbvDec2026) || 0; return s;
+    }, { lines: 0, cost: 0, accum: 0, nbv: 0 });
+  }
+  return { rows: rows, unmatched: sumLines('Unmatched'), notFound: sumLines('Not found'), underReview: underReview,
+    note: 'Accumulated depreciation is shown as a negative balance, as in Xero.' };
+}
+
+function round3_(n) { return Math.round(Number(n) * 1000) / 1000; }
 
 // ---------------------------------------------------------------------------
 // Validation
