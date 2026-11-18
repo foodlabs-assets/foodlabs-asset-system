@@ -57,12 +57,14 @@ function makeEnv() {
     getSheetByName: (n) => sheets[n] || null,
     insertSheet: (n) => (sheets[n] = makeSheet(n)),
     getSheets: () => Object.values(sheets),
-    deleteSheet: (s) => { delete sheets[s.name]; }
+    deleteSheet: (s) => { delete sheets[s.name]; },
+    getId: () => 'mock-sheet-id',
+    getUrl: () => 'https://docs.google.com/spreadsheets/d/mock-sheet-id'
   };
 
   const ctx = {
     console,
-    SpreadsheetApp: { getActive: () => ss, ProtectionType: { SHEET: 'SHEET' } },
+    SpreadsheetApp: { getActive: () => ss, openById: () => ss, create: () => ss, ProtectionType: { SHEET: 'SHEET' } },
     PropertiesService: {
       getScriptProperties: () => ({
         getProperty: (k) => (k in props ? props[k] : null),

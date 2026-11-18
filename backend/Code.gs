@@ -143,7 +143,11 @@ function setup() {
   if (!props.getProperty('BOOTSTRAP_ADMIN')) {
     props.setProperty('BOOTSTRAP_ADMIN', String(Session.getEffectiveUser().getEmail() || '').toLowerCase());
   }
-  var ss = SpreadsheetApp.getActive();
+  if (!props.getProperty('SHEET_ID') && !SpreadsheetApp.getActive()) {
+    var created = SpreadsheetApp.create('Foodlabs Asset System — Data');
+    props.setProperty('SHEET_ID', created.getId());
+  }
+  var ss = book_();
   Object.keys(SCHEMA).forEach(function (name) { ensureSheet_(ss, name); });
 
   var settings = readTable_('Settings');
@@ -164,7 +168,13 @@ function setup() {
 
   var blank = ss.getSheetByName('Sheet1');
   if (blank && ss.getSheets().length > 1 && blank.getLastRow() === 0) ss.deleteSheet(blank);
-  return 'Setup done. Bootstrap admin: ' + props.getProperty('BOOTSTRAP_ADMIN');
+  return 'Setup done. Data sheet: ' + ss.getUrl() + ' · Bootstrap admin: ' + props.getProperty('BOOTSTRAP_ADMIN');
+}
+
+/** The data spreadsheet: the one in SHEET_ID (standalone script), else the bound one. */
+function book_() {
+  var id = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
+  return id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActive();
 }
 
 function ensureSheet_(ss, name) {
@@ -471,7 +481,7 @@ function coerce_(f, v) {
 // ---------------------------------------------------------------------------
 
 function sheet_(name) {
-  var sh = SpreadsheetApp.getActive().getSheetByName(name);
+  var sh = book_().getSheetByName(name);
   if (!sh) throw appError_('SETUP', 'Sheet ' + name + ' is missing. Run setup.');
   return sh;
 }
