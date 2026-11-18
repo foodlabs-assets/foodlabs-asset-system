@@ -72,7 +72,13 @@ function makeEnv() {
       })
     },
     CacheService: {
-      getScriptCache: () => ({ get: (k) => cache[k] || null, put: (k, v) => { cache[k] = v; } })
+      getScriptCache: () => ({
+        get: (k) => (k in cache ? cache[k] : null),
+        put: (k, v) => { cache[k] = v; },
+        getAll: (ks) => { const o = {}; ks.forEach((k) => { if (k in cache) o[k] = cache[k]; }); return o; },
+        putAll: (m) => Object.assign(cache, m),
+        removeAll: (ks) => ks.forEach((k) => delete cache[k])
+      })
     },
     UrlFetchApp: {
       fetch: (url) => {
@@ -112,7 +118,7 @@ function makeEnv() {
     const res = ctx.doPost({ postData: { contents: JSON.stringify({ token, action, payload }) } });
     return JSON.parse(res.body);
   }
-  return { ctx, sheets, props, addToken, call, fetchCount: () => fetchCalls };
+  return { ctx, sheets, props, cache, addToken, call, fetchCount: () => fetchCalls };
 }
 
 module.exports = { makeEnv };

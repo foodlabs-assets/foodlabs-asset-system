@@ -100,12 +100,27 @@ try:
         pg.click('.drawer footer >> text=Save')
         pg.wait_for_selector('.drawer', state='detached')
         pg.click('table.datatable >> text=Kitchen equipment')
+        pg.click('.history >> text=Show change history')
         pg.wait_for_selector('.history >> text=UsefulLifeMonths')
         pg.screenshot(path=f'{SHOTS}/04-edit-history.png')
         pg.click('.drawer footer >> text=Cancel')
         pg.click('.tablist >> text=Users')
         pg.wait_for_selector('table.datatable >> text=rima@foodlabs.com.kw')
         pg.screenshot(path=f'{SHOTS}/05-users.png')
+
+        # Switching admin tabs uses the local copy: no backend calls
+        calls = []
+        pg.on('request', lambda r: '8790' in r.url and calls.append(r.url))
+        for t in ['Locations', 'Brands', 'Departments', 'Users']:
+            pg.click(f'.tablist >> text="{t}"')
+            pg.wait_for_selector('.toolbar h3:has-text("%s")' % t)
+        assert calls == [], calls
+        # A reload paints from the session copy, then refreshes with one call
+        calls.clear()
+        pg.reload()
+        pg.wait_for_selector('table.datatable >> text=rima@foodlabs.com.kw')
+        pg.wait_for_timeout(800)
+        assert len(calls) == 1, calls
 
         # Manager on a phone
         mg = page_for('rima@foodlabs.com.kw', 'Rima', {'width': 390, 'height': 844})

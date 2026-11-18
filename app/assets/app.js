@@ -4,6 +4,7 @@
 
   var CFG = window.FAS_CONFIG || {};
   var TOKEN_KEY = 'fas_token';
+  var BOOT_KEY = 'fas_boot';
   var state = { token: null, user: null, meta: null, cache: {}, route: '' };
   var root = document.getElementById('app');
 
@@ -59,7 +60,7 @@
   }
   function signOut() {
     state.token = null; state.user = null; state.meta = null; state.cache = {};
-    try { sessionStorage.removeItem(TOKEN_KEY); } catch (e) {}
+    try { sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(BOOT_KEY); } catch (e) {}
     if (window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
     renderLogin();
   }
@@ -122,15 +123,34 @@
     root.appendChild(h('div', { class: 'boot' }, h('div', { class: 'spinner' })));
     loadSession();
   }
+  // One call after sign-in brings the user, the admin tables and their rows.
+  // The last copy is kept for this browser session so a reload paints at once,
+  // then a fresh copy replaces it in the background.
+  function applyBoot(boot) {
+    state.meta = boot; state.user = boot.user;
+    state.cache = boot.data || {};
+  }
   function loadSession() {
-    api('meta').then(function (meta) {
-      state.meta = meta; state.user = meta.user;
-      route();
+    var shown = false;
+    try {
+      var saved = JSON.parse(sessionStorage.getItem(BOOT_KEY) || 'null');
+      if (saved && saved.user) { applyBoot(saved); route(); shown = true; }
+    } catch (e) { /* ignore */ }
+    api('bootstrap').then(function (boot) {
+      applyBoot(boot);
+      try { sessionStorage.setItem(BOOT_KEY, JSON.stringify(boot)); } catch (e) {}
+      if (!shown || !document.querySelector('.drawer')) route();
     }).catch(function (e) {
-      try { sessionStorage.removeItem(TOKEN_KEY); } catch (x) {}
+      try { sessionStorage.removeItem(TOKEN_KEY); sessionStorage.removeItem(BOOT_KEY); } catch (x) {}
       state.token = null;
       renderLogin(e.message);
     });
+  }
+  function rememberCache() {
+    try {
+      var boot = JSON.parse(sessionStorage.getItem(BOOT_KEY) || 'null');
+      if (boot) { boot.data = state.cache; sessionStorage.setItem(BOOT_KEY, JSON.stringify(boot)); }
+    } catch (e) {}
   }
 
   // ---------------------------------------------------------------- shell
@@ -201,19 +221,24 @@
     var search = h('input', { class: 'search', type: 'search', placeholder: 'Search', 'aria-label': 'Search' });
     var addBtn = tableName === 'Settings' ? null :
       h('button', { class: 'btn primary', text: 'Add', onclick: function () { openForm(tableName, null); } });
+    var refreshBtn = h('button', { class: 'btn', text: 'Refresh', title: 'Reload from the server' });
     var listBox = h('div', null, h('div', { class: 'boot', style: 'min-height:160px' }, h('div', { class: 'spinner' })));
     shell('admin', h('div', { class: 'admin' }, tabs,
-      h('section', null, h('div', { class: 'toolbar' }, h('h3', { text: def.title }), search, addBtn), listBox)));
+      h('section', null, h('div', { class: 'toolbar' }, h('h3', { text: def.title }), search, refreshBtn, addBtn), listBox)));
 
-    var refs = refTablesFor(def);
-    Promise.all([loadTable(tableName, true)].concat(refs.map(function (r) { return loadTable(r); })))
-      .then(function (res) {
-        var rows = res[0];
-        var paint = function () { paintTable(listBox, tableName, def, rows, search.value); };
-        search.addEventListener('input', paint);
-        paint();
-      })
-      .catch(function (e) { clear(listBox); listBox.appendChild(h('div', { class: 'error', text: e.message })); });
+    var paint = function () { paintTable(listBox, tableName, def, state.cache[tableName] || [], search.value); };
+    search.addEventListener('input', paint);
+    var load = function (force) {
+      var refs = refTablesFor(def);
+      return Promise.all([loadTable(tableName, force)].concat(refs.map(function (r) { return loadTable(r, force); })))
+        .then(function () { rememberCache(); paint(); })
+        .catch(function (e) { clear(listBox); listBox.appendChild(h('div', { class: 'error', text: e.message })); });
+    };
+    refreshBtn.addEventListener('click', function () {
+      refreshBtn.disabled = true; refreshBtn.textContent = 'Refreshing…';
+      load(true).then(function () { refreshBtn.disabled = false; refreshBtn.textContent = 'Refresh'; });
+    });
+    if (state.cache[tableName]) paint(); else load(false);
   }
 
   function refTablesFor(def) {
@@ -325,16 +350,21 @@
     });
 
     if (!isNew) {
-      var hist = h('div', { class: 'history' }, h('h4', { text: 'Change history' }), h('div', { class: 'muted', text: 'Loading…' }));
+      var histBtn = h('button', { class: 'btn', text: 'Show change history' });
+      var hist = h('div', { class: 'history' }, histBtn);
       body.appendChild(hist);
-      api('audit', { table: tableName, id: row[def.key] }).then(function (d) {
-        hist.removeChild(hist.lastChild);
-        if (!d.rows.length) { hist.appendChild(h('div', { class: 'muted', text: 'No changes recorded.' })); return; }
-        hist.appendChild(h('ul', null, d.rows.slice(0, 30).map(function (a) {
-          var what = a.Action === 'create' ? 'Created' : (a.Field + ': ' + (a.OldValue || '—') + ' → ' + (a.NewValue || '—'));
-          return h('li', null, what, h('small', { text: a.Timestamp + ' · ' + a.User }));
-        })));
-      }).catch(function () { hist.lastChild.textContent = 'History unavailable.'; });
+      histBtn.addEventListener('click', function () {
+        histBtn.disabled = true; histBtn.textContent = 'Loading…';
+        api('audit', { table: tableName, id: row[def.key] }).then(function (d) {
+          clear(hist);
+          hist.appendChild(h('h4', { text: 'Change history' }));
+          if (!d.rows.length) { hist.appendChild(h('div', { class: 'muted', text: 'No changes recorded.' })); return; }
+          hist.appendChild(h('ul', null, d.rows.slice(0, 30).map(function (a) {
+            var what = a.Action === 'create' ? 'Created' : (a.Field + ': ' + (a.OldValue || '—') + ' → ' + (a.NewValue || '—'));
+            return h('li', null, what, h('small', { text: a.Timestamp + ' · ' + a.User }));
+          })));
+        }).catch(function () { histBtn.disabled = false; histBtn.textContent = 'History unavailable. Try again'; });
+      });
     }
 
     var saveBtn = h('button', { class: 'btn primary', text: isNew ? 'Create' : 'Save' });
@@ -358,7 +388,12 @@
       api('save', { table: tableName, record: record, isNew: isNew }).then(function (d) {
         close();
         toast(d.unchanged ? 'No changes' : 'Saved');
-        delete state.cache[tableName];
+        var rows = (state.cache[tableName] || []).slice();
+        var key = def.key, idx = -1;
+        for (var i = 0; i < rows.length; i++) if (String(rows[i][key]).toLowerCase() === String(d.record[key]).toLowerCase()) idx = i;
+        if (idx === -1) rows.push(d.record); else rows[idx] = d.record;
+        state.cache[tableName] = rows;
+        rememberCache();
         if (tableName === 'Users' && record.Email && record.Email.toLowerCase() === state.user.email) {
           return loadSession();
         }

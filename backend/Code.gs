@@ -10,7 +10,7 @@
  * runs on another origin and cannot send Google cookies.
  */
 
-var APP_VERSION = '0.1.0';
+var APP_VERSION = '0.1.1';
 var TZ = 'Asia/Kuwait';
 
 var ROLES = ['Admin', 'Accounting', 'Management', 'Manager', 'Technician', 'CountTeam'];
@@ -172,9 +172,12 @@ function setup() {
 }
 
 /** The data spreadsheet: the one in SHEET_ID (standalone script), else the bound one. */
+var BOOK_ = null;
 function book_() {
+  if (BOOK_) return BOOK_;
   var id = PropertiesService.getScriptProperties().getProperty('SHEET_ID');
-  return id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActive();
+  BOOK_ = id ? SpreadsheetApp.openById(id) : SpreadsheetApp.getActive();
+  return BOOK_;
 }
 
 function ensureSheet_(ss, name) {
@@ -237,6 +240,7 @@ function handle_(req) {
   switch (req.action) {
     case 'me': return { user: publicUser_(user), version: APP_VERSION };
     case 'meta': return meta_(user);
+    case 'bootstrap': return bootstrap_(user);
     case 'list': return listTable_(user, p.table);
     case 'save': return saveRecord_(user, p.table, p.record, p.isNew === true);
     case 'audit': return auditFor_(user, p.table, p.id);
@@ -325,6 +329,18 @@ function meta_(user) {
   return { user: publicUser_(user), tables: tables, roles: ROLES, version: APP_VERSION };
 }
 
+/** Everything the app needs after sign-in, in one round trip. */
+function bootstrap_(user) {
+  var meta = meta_(user);
+  var data = {};
+  Object.keys(meta.tables).forEach(function (name) {
+    var def = SCHEMA[name];
+    data[name] = readTable_(name).map(function (r) { return pick_(r, def); });
+  });
+  meta.data = data;
+  return meta;
+}
+
 function listTable_(user, table) {
   requireAdmin_(user);
   var def = adminDef_(table);
@@ -338,7 +354,7 @@ function saveRecord_(user, table, record, isNew) {
   if (table === 'Settings' && isNew) throw appError_('INVALID', 'Settings cannot be added from the app.');
 
   return withLock_(function () {
-    var rows = readTable_(table);
+    var rows = readTableFromSheet_(table); // fresh read inside the lock, never the cache
     var keyName = def.key;
     var clean = validate_(def, record, rows, isNew);
 
@@ -486,7 +502,55 @@ function sheet_(name) {
   return sh;
 }
 
+/**
+ * Table reads are served from the script cache (10 minutes, cleared on every app write),
+ * so most requests never open the spreadsheet. Big tables are split across cache keys.
+ */
+var TABLE_TTL_SEC = 600;
+var CACHE_CHUNK = 90000;
+
 function readTable_(name) {
+  var cached = cacheGetJson_('tbl_' + name);
+  if (cached) return cached;
+  var rows = readTableFromSheet_(name);
+  cachePutJson_('tbl_' + name, rows, TABLE_TTL_SEC);
+  return rows;
+}
+
+function invalidate_(name) {
+  var cache = CacheService.getScriptCache();
+  var n = Number(cache.get('tbl_' + name + '_n') || 0);
+  var keys = ['tbl_' + name + '_n'];
+  for (var i = 0; i < n; i++) keys.push('tbl_' + name + '_' + i);
+  cache.removeAll(keys);
+}
+
+function cachePutJson_(key, value, ttl) {
+  var s = JSON.stringify(value);
+  var parts = Math.ceil(s.length / CACHE_CHUNK) || 1;
+  if (parts > 50) return; // too large to cache; read from the sheet instead
+  var map = {};
+  for (var i = 0; i < parts; i++) map[key + '_' + i] = s.substr(i * CACHE_CHUNK, CACHE_CHUNK);
+  map[key + '_n'] = String(parts);
+  CacheService.getScriptCache().putAll(map, ttl);
+}
+
+function cacheGetJson_(key) {
+  var cache = CacheService.getScriptCache();
+  var n = Number(cache.get(key + '_n') || 0);
+  if (!n) return null;
+  var keys = [];
+  for (var i = 0; i < n; i++) keys.push(key + '_' + i);
+  var got = cache.getAll(keys);
+  var s = '';
+  for (var j = 0; j < n; j++) {
+    if (got[keys[j]] === undefined || got[keys[j]] === null) return null;
+    s += got[keys[j]];
+  }
+  try { return JSON.parse(s); } catch (e) { return null; }
+}
+
+function readTableFromSheet_(name) {
   var sh = sheet_(name);
   var lastRow = sh.getLastRow(), lastCol = sh.getLastColumn();
   if (lastRow < 2 || lastCol < 1) return [];
@@ -511,6 +575,7 @@ function appendRow_(name, obj) {
   var sh = sheet_(name);
   var headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
   sh.appendRow(headers.map(function (h) { return obj[h] === undefined ? '' : obj[h]; }));
+  invalidate_(name);
 }
 
 function updateRow_(name, rowIndex, obj) {
@@ -519,6 +584,7 @@ function updateRow_(name, rowIndex, obj) {
   var current = sh.getRange(rowIndex, 1, 1, headers.length).getValues()[0];
   var next = headers.map(function (h, i) { return obj[h] === undefined ? current[i] : obj[h]; });
   sh.getRange(rowIndex, 1, 1, headers.length).setValues([next]);
+  invalidate_(name);
 }
 
 function audit_(userEmail, table, id, action, field, oldV, newV) {

@@ -144,4 +144,36 @@ test('list returns rows without internal row numbers', () => {
   assert.strictEqual(r.data.rows[0].__row, undefined);
 });
 
+test('bootstrap returns meta and every admin table in one call', () => {
+  const r = env.call('t-osama', 'bootstrap');
+  assert(r.ok, JSON.stringify(r));
+  assert.strictEqual(r.data.user.role, 'Admin');
+  assert.strictEqual(r.data.data.Locations.length, 2);
+  assert.strictEqual(r.data.data.Categories.length, 7);
+  assert(!('AuditLog' in r.data.data));
+  assert.deepStrictEqual(Object.keys(env.call('t-acc', 'bootstrap').data.data).length, 7);
+});
+
+test('table reads come from cache and writes invalidate it', () => {
+  env.call('t-osama', 'list', { table: 'Brands' });
+  const sh = env.sheets.Brands;
+  const orig = sh.getRange;
+  let reads = 0;
+  sh.getRange = function () { reads++; return orig.apply(sh, arguments); };
+  env.call('t-osama', 'list', { table: 'Brands' });
+  assert.strictEqual(reads, 0, 'second list should not touch the sheet');
+  env.call('t-osama', 'save', { table: 'Brands', record: { Name: 'Burger Bros' }, isNew: true });
+  const after = env.call('t-osama', 'list', { table: 'Brands' });
+  assert(after.data.rows.some((b) => b.Name === 'Burger Bros'));
+  sh.getRange = orig;
+});
+
+test('large tables are chunked across cache keys', () => {
+  const big = [];
+  for (let i = 0; i < 3000; i++) big.push({ a: 'x'.repeat(50) + i });
+  env.ctx.cachePutJson_('tbl_Big', big, 600);
+  assert(Number(env.cache['tbl_Big_n']) > 1);
+  assert.strictEqual(env.ctx.cacheGetJson_('tbl_Big').length, 3000);
+});
+
 console.log(`\n${passed} tests passed`);
