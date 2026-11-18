@@ -166,8 +166,7 @@ function setup() {
     });
   }
 
-  var blank = ss.getSheetByName('Sheet1');
-  if (blank && ss.getSheets().length > 1 && blank.getLastRow() === 0) ss.deleteSheet(blank);
+  formatBook_(ss);
   return 'Setup done. Data sheet: ' + ss.getUrl() + ' · Bootstrap admin: ' + props.getProperty('BOOTSTRAP_ADMIN');
 }
 
@@ -200,6 +199,87 @@ function ensureSheet_(ss, name) {
     sh.protect().setDescription('Written by the Foodlabs Asset System app').setWarningOnly(true);
   }
   return sh;
+}
+
+/** Run from the editor to re-apply the look of the data sheet without touching data. */
+function formatSheets() {
+  formatBook_(book_());
+  return 'Formatted';
+}
+
+var SHEET_ORDER = ['Users', 'Locations', 'Departments', 'Brands', 'Categories', 'Types', 'Settings', 'AuditLog'];
+var BRAND_GREEN = '#0f5e4b';
+
+function formatBook_(ss) {
+  // Remove the empty default tab a new spreadsheet comes with (any language).
+  ss.getSheets().forEach(function (sh) {
+    if (!SCHEMA[sh.getName()] && sh.getLastRow() === 0 && ss.getSheets().length > 1) ss.deleteSheet(sh);
+  });
+  SHEET_ORDER.forEach(function (name, i) {
+    var sh = ss.getSheetByName(name);
+    if (!sh) return;
+    ss.setActiveSheet(sh);
+    ss.moveActiveSheet(i + 1);
+    formatSheet_(sh, name);
+  });
+  ss.setActiveSheet(ss.getSheetByName(SHEET_ORDER[0]));
+}
+
+function formatSheet_(sh, name) {
+  var def = SCHEMA[name];
+  var headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var cols = headers.length;
+  var rows = Math.max(sh.getMaxRows(), 2);
+  var fieldBy = {};
+  def.fields.forEach(function (f) { fieldBy[f.name] = f; });
+
+  sh.setTabColor(name === 'AuditLog' ? '#8a9690' : name === 'Settings' ? '#c58a00' : BRAND_GREEN);
+  sh.getRange(1, 1, rows, cols).setFontFamily('Arial').setFontSize(10).setVerticalAlignment('middle');
+  sh.getRange(1, 1, 1, cols)
+    .setBackground(BRAND_GREEN).setFontColor('#ffffff').setFontWeight('bold')
+    .setHorizontalAlignment('left').setWrap(false);
+  sh.setRowHeight(1, 32);
+  sh.setFrozenRows(1);
+  if (cols > 1 && def.key) sh.setFrozenColumns(1);
+
+  // Header tooltips with the friendly label shown in the app.
+  sh.getRange(1, 1, 1, cols).setNotes([headers.map(function (h) {
+    var f = fieldBy[h];
+    return f && f.label ? f.label : (h === 'UpdatedAt' ? 'Last change (Kuwait time)' : h === 'UpdatedBy' ? 'Last changed by' : '');
+  })]);
+
+  headers.forEach(function (h, i) {
+    var f = fieldBy[h] || {};
+    var col = i + 1;
+    var body = sh.getRange(2, col, rows - 1, 1);
+    var width = 150;
+    if (f.keyField) width = h === 'Email' ? 240 : 110;
+    else if (f.type === 'bool') width = 110;
+    else if (f.type === 'number') width = 130;
+    else if (f.type === 'select' || f.type === 'ref') width = 150;
+    else if (f.type === 'refs') width = 200;
+    else if (h === 'Name' || h === 'Description' || h === 'NewValue' || h === 'OldValue') width = 240;
+    else if (h === 'UpdatedAt' || h === 'Timestamp') width = 160;
+    else if (h === 'UpdatedBy' || h === 'User') width = 220;
+    sh.setColumnWidth(col, width);
+    if (f.type === 'bool') {
+      body.setHorizontalAlignment('center');
+      body.setDataValidation(SpreadsheetApp.newDataValidation().requireCheckbox().build());
+    } else if (f.type === 'number') {
+      body.setHorizontalAlignment('right').setNumberFormat('#,##0.###');
+    } else {
+      body.setNumberFormat('@');
+    }
+    if (h === 'UpdatedAt' || h === 'UpdatedBy' || h === 'Timestamp') body.setFontColor('#5d6b65');
+  });
+
+  var bandings = sh.getBandings();
+  bandings.forEach(function (b) { b.remove(); });
+  sh.getRange(1, 1, rows, cols)
+    .applyRowBanding(SpreadsheetApp.BandingTheme.LIGHT_GREY, true, false)
+    .setHeaderRowColor(BRAND_GREEN)
+    .setFirstRowColor('#ffffff')
+    .setSecondRowColor('#f3f6f4');
 }
 
 function headersFor_(name) {

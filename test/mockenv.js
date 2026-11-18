@@ -3,6 +3,16 @@ const fs = require('fs');
 const vm = require('vm');
 const crypto = require('crypto');
 
+// Any Apps Script method the tests do not model (formatting, validation, banding) becomes a chainable no-op.
+function chain() {
+  const fn = function () { return proxy; };
+  const proxy = new Proxy(fn, { get: (t, k) => (k === 'then' ? undefined : (k === 'length' ? 0 : fn)), apply: () => proxy });
+  return proxy;
+}
+function tolerant(obj) {
+  return new Proxy(obj, { get: (t, k) => (k in t ? t[k] : (typeof k === 'symbol' ? undefined : chain())) });
+}
+
 function makeEnv() {
   const sheets = {};
   const props = {};
@@ -18,7 +28,7 @@ function makeEnv() {
       getLastRow: () => data.length,
       getLastColumn: () => data.reduce((m, r) => Math.max(m, r.length), 0),
       getRange(r, c, nr = 1, nc = 1) {
-        return {
+        return tolerant({
           getValues() {
             const out = [];
             for (let i = 0; i < nr; i++) {
@@ -40,31 +50,34 @@ function makeEnv() {
           },
           setValue(v) { return this.setValues([[v]]); },
           setFontWeight() { return this; }
-        };
+        });
       },
       appendRow(row) { data.push(row.slice()); },
       setFrozenRows() {},
       getProtections() { return sh.protections; },
+      getMaxRows: () => Math.max(data.length, 1000),
+      getBandings: () => [],
       protect() {
         const p = { setDescription() { return p; }, setWarningOnly() { sh.protections.push(p); return p; } };
         return p;
       }
     };
-    return sh;
+    return tolerant(sh);
   }
 
-  const ss = {
+  const ss = tolerant({
     getSheetByName: (n) => sheets[n] || null,
     insertSheet: (n) => (sheets[n] = makeSheet(n)),
     getSheets: () => Object.values(sheets),
     deleteSheet: (s) => { delete sheets[s.name]; },
     getId: () => 'mock-sheet-id',
-    getUrl: () => 'https://docs.google.com/spreadsheets/d/mock-sheet-id'
-  };
+    getUrl: () => 'https://docs.google.com/spreadsheets/d/mock-sheet-id',
+    setActiveSheet: () => {}, moveActiveSheet: () => {}
+  });
 
   const ctx = {
     console,
-    SpreadsheetApp: { getActive: () => ss, openById: () => ss, create: () => ss, ProtectionType: { SHEET: 'SHEET' } },
+    SpreadsheetApp: tolerant({ getActive: () => ss, openById: () => ss, create: () => ss, ProtectionType: { SHEET: 'SHEET' }, BandingTheme: { LIGHT_GREY: 'LIGHT_GREY' } }),
     PropertiesService: {
       getScriptProperties: () => ({
         getProperty: (k) => (k in props ? props[k] : null),
