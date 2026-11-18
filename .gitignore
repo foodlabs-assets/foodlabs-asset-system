@@ -1,0 +1,3 @@
+test/shots/
+app/assets/*.png
+node_modules/
