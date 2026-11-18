@@ -31,7 +31,7 @@ try:
             ctx = browser.new_context(viewport=viewport)
             ctx.add_init_script('window.__TOKEN = %s;' % json.dumps(fake_token(email, name)))
             ctx.route('**/gsi/client', lambda r: r.fulfill(status=200, content_type='text/javascript', body=GSI_STUB))
-            ctx.route('**/config.js', lambda r: r.fulfill(status=200, content_type='text/javascript',
+            ctx.route('**/config.js*', lambda r: r.fulfill(status=200, content_type='text/javascript',
                 body="window.FAS_CONFIG={clientId:'x',backendUrl:'http://localhost:8790/exec'};"))
             pg = ctx.new_page()
             pg.on('pageerror', lambda e: errors.append(str(e)))

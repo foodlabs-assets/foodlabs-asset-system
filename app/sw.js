@@ -1,5 +1,5 @@
 // Network first, cached copy only when offline. Data calls go to the backend and are never cached.
-var CACHE = 'fas-shell-v1';
+var CACHE = 'fas-shell-v2';
 var SHELL = ['./', 'index.html', 'config.js', 'assets/app.js', 'assets/styles.css', 'assets/icon.svg', 'manifest.webmanifest'];
 
 self.addEventListener('install', function (e) {
@@ -13,7 +13,9 @@ self.addEventListener('activate', function (e) {
 self.addEventListener('fetch', function (e) {
   var url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== self.location.origin) return;
-  e.respondWith(fetch(e.request).then(function (res) {
+  // Revalidate every file so a new release (config, code) shows up on the next load.
+  var live = e.request.mode === 'navigate' ? fetch(e.request) : fetch(e.request.url, { cache: 'no-cache', credentials: 'same-origin' });
+  e.respondWith(live.then(function (res) {
     var copy = res.clone();
     caches.open(CACHE).then(function (c) { c.put(e.request, copy); });
     return res;
