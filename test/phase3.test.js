@@ -187,4 +187,11 @@ test('with no technician, the area and operations managers get the request and h
   assert(!d2.can.workDone && d2.can.assign);
 });
 
+test('area manager (several locations) and central kitchen manager can ask for maintenance', () => {
+  // The area manager is a Manager assigned to all his branches; the kitchen manager to the central kitchen.
+  ok(area('requestMaintenance', { code: 'FL-000001', request: { Type: 'Damage', Description: 'Handle loose' } }));
+  ok(sam('requestMaintenance', { code: 'FL-000003', request: { Type: 'Damage', Description: 'Door seal' } }));
+  assert.strictEqual(sam('requestMaintenance', { code: 'FL-000001', request: { Type: 'Damage', Description: 'x' } }).error.code, 'FORBIDDEN');
+});
+
 console.log(`\n${passed} tests passed`);
