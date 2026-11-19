@@ -91,8 +91,8 @@ test('the technician records the work; accounting closes with the invoice', () =
 });
 
 test('admin reassigns, requester cancels, and the asset goes back to Active', () => {
-  const r = ok(rima('requestMaintenance', { code: 'FL-000002', request: { Type: 'Damage', Description: 'Door broken', Technician: tokens.ali } }));
-  assert.strictEqual(rima('requestMaintenance', { code: 'FL-000002', request: { Type: 'Damage', Description: 'x', Technician: tokens.rima } }).error.code, 'INVALID');
+  const r = ok(rima('requestMaintenance', { code: 'FL-000002', request: { Type: 'Other', Description: 'Door broken', Technician: tokens.ali } }));
+  assert.strictEqual(rima('requestMaintenance', { code: 'FL-000002', request: { Type: 'Other', Description: 'x', Technician: tokens.rima } }).error.code, 'INVALID');
   assert.strictEqual(ali('updateMaintenance', { id: r.request.RequestId, step: 'assign', values: { Technician: tokens.ali } }).error.code, 'FORBIDDEN');
   ok(admin('updateMaintenance', { id: r.request.RequestId, step: 'assign', values: { Technician: tokens.ali } }));
   ok(rima('updateMaintenance', { id: r.request.RequestId, step: 'cancel', values: { Reason: 'Duplicate' } }));
@@ -189,9 +189,9 @@ test('with no technician, the area and operations managers get the request and h
 
 test('area manager (several locations) and central kitchen manager can ask for maintenance', () => {
   // The area manager is a Manager assigned to all his branches; the kitchen manager to the central kitchen.
-  ok(area('requestMaintenance', { code: 'FL-000001', request: { Type: 'Damage', Description: 'Handle loose' } }));
-  ok(sam('requestMaintenance', { code: 'FL-000003', request: { Type: 'Damage', Description: 'Door seal' } }));
-  assert.strictEqual(sam('requestMaintenance', { code: 'FL-000001', request: { Type: 'Damage', Description: 'x' } }).error.code, 'FORBIDDEN');
+  ok(area('requestMaintenance', { code: 'FL-000001', request: { Type: 'Other', Description: 'Handle loose' } }));
+  ok(sam('requestMaintenance', { code: 'FL-000003', request: { Type: 'Other', Description: 'Door seal' } }));
+  assert.strictEqual(sam('requestMaintenance', { code: 'FL-000001', request: { Type: 'Other', Description: 'x' } }).error.code, 'FORBIDDEN');
 });
 
 console.log(`\n${passed} tests passed`);

@@ -294,7 +294,7 @@ var DEFAULT_SETTINGS = [
   ['WarrantyAlertDays', '', 'Days before warranty end to send an alert'],
   ['CountTeamOpen', 'FALSE', 'TRUE while the count team may register assets on blank labels'],
   ['PhotoFolderId', '', 'Drive folder for asset photos (filled automatically)'],
-  ['MaintenanceTypes', 'Breakdown, Damage, Preventive, Loss or theft, Other', 'Choices for the type of a maintenance request, separated by commas']
+  ['MaintenanceTypes', 'Breakdown, Preventive, Other', 'Choices for the type of a maintenance request, separated by commas']
 ];
 
 /** Cost centres as they are written in Xero, seeded once; edit or add more in admin. */
