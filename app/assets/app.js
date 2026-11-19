@@ -278,6 +278,8 @@
     clear(box);
     var cols = def.fields;
     var q = String(query || '').toLowerCase();
+    // Never show a row without its ID: it cannot be edited safely.
+    rows = rows.filter(function (r) { return r[def.key] !== '' && r[def.key] !== null && r[def.key] !== false && r[def.key] !== undefined; });
     var filtered = rows.filter(function (r) {
       if (!q) return true;
       return cols.some(function (f) {

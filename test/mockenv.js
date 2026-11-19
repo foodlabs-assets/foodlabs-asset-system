@@ -25,7 +25,8 @@ function makeEnv() {
     const sh = {
       name, data, protections: [],
       getName: () => name,
-      getLastRow: () => data.length,
+      // Like Sheets: FALSE (unticked checkbox) counts as content, '' does not.
+      getLastRow: () => { for (let i = data.length - 1; i >= 0; i--) if ((data[i] || []).some((v) => v !== '' && v !== undefined && v !== null)) return i + 1; return 0; },
       getLastColumn: () => data.reduce((m, r) => Math.max(m, r.length), 0),
       getRange(r, c, nr = 1, nc = 1) {
         return tolerant({
@@ -49,6 +50,12 @@ function makeEnv() {
             return this;
           },
           setValue(v) { return this.setValues([[v]]); },
+          clearContent() {
+            for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) {
+              if (data[r - 1 + i]) data[r - 1 + i][c - 1 + j] = '';
+            }
+            return this;
+          },
           setFontWeight() { return this; }
         });
       },

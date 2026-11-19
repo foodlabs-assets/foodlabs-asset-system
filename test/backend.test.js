@@ -334,4 +334,32 @@ test('closing the count stops the count team again', () => {
   assert.strictEqual(env.call('t-count', 'register', { code: 'FL-000004', asset: base }).error.code, 'FORBIDDEN');
 });
 
+test('repairs checkbox filler rows and records without an ID (0.2.1)', () => {
+  const e2 = makeEnv();
+  e2.ctx.setup();
+  e2.addToken('t-a', 'osama@foodlabs.com.kw');
+  assert(e2.call('t-a', 'me').ok);
+  // Recreate the live state: checkbox formatting filled 998 empty rows with FALSE,
+  // and an edit of a blank row left a record without an ID.
+  const b = e2.sheets.Brands.data;
+  b.push(['BRD-001', "Philly's", true, '2026-11-18', 'osama@foodlabs.com.kw']);
+  b.push(['', 'Boba', true, '2026-11-19', 'osama@foodlabs.com.kw']);
+  for (let i = 0; i < 997; i++) b.push(['', '', false, '', '']);
+  delete e2.props.DATA_FIX;
+  Object.keys(e2.cache).forEach((k) => delete e2.cache[k]);
+  const boot = e2.call('t-a', 'bootstrap');
+  assert(boot.ok, JSON.stringify(boot));
+  assert.deepStrictEqual(boot.data.data.Brands.map((r) => [r.BrandId, r.Name]), [['BRD-001', "Philly's"], ['BRD-002', 'Boba']]);
+  assert.strictEqual(e2.sheets.Brands.getLastRow(), 3);
+  // A new brand goes straight under the data with the next ID.
+  const add = e2.call('t-a', 'save', { table: 'Brands', isNew: true, record: { Name: 'Smashy', Active: true } });
+  assert.strictEqual(add.data.record.BrandId, 'BRD-003');
+  assert.strictEqual(b[3][1], 'Smashy');
+  // Editing a record with no ID is refused instead of overwriting another row.
+  const bad = e2.call('t-a', 'save', { table: 'Brands', isNew: false, record: { BrandId: '', Name: 'X', Active: true } });
+  assert.strictEqual(bad.error.code, 'INVALID');
+  assert.strictEqual(e2.call('t-a', 'list', { table: 'Brands' }).data.rows.length, 3);
+  assert(e2.sheets.AuditLog.data.some((r) => r[5] === 'repair' || r.indexOf('repair') !== -1));
+});
+
 console.log(`\n${passed} tests passed`);

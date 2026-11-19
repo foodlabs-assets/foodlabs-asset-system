@@ -10,7 +10,7 @@
  * runs on another origin and cannot send Google cookies.
  */
 
-var APP_VERSION = '0.2.0';
+var APP_VERSION = '0.2.1';
 var TZ = 'Asia/Kuwait';
 
 var ROLES = ['Admin', 'Accounting', 'Management', 'Manager', 'Technician', 'CountTeam'];
@@ -261,6 +261,8 @@ function setup() {
     });
   }
 
+  repairSheets_();
+  PropertiesService.getScriptProperties().setProperty('DATA_FIX', DATA_FIX_VERSION);
   formatBook_(ss);
   return 'Setup done. Data sheet: ' + ss.getUrl() + ' · Bootstrap admin: ' + props.getProperty('BOOTSTRAP_ADMIN');
 }
@@ -360,7 +362,9 @@ function formatSheet_(sh, name) {
     sh.setColumnWidth(col, width);
     if (f.type === 'bool') {
       body.setHorizontalAlignment('center');
-      body.setDataValidation(SpreadsheetApp.newDataValidation().requireCheckbox().build());
+      body.setDataValidation(null);
+      var dataRows = lastDataRow_(sh) - 1;
+      if (dataRows > 0) sh.getRange(2, col, dataRows, 1).setDataValidation(SpreadsheetApp.newDataValidation().requireCheckbox().build());
     } else if (f.type === 'number') {
       body.setHorizontalAlignment('right').setNumberFormat('#,##0.###');
     } else {
@@ -411,6 +415,7 @@ function json_(obj) {
 /** Routes one request. Exposed separately from doPost for tests. */
 function handle_(req) {
   var identity = verifyToken_(req.token);
+  ensureDataFixed_();
   var user = resolveUser_(identity);
   var p = req.payload || {};
   switch (req.action) {
@@ -589,6 +594,9 @@ function saveRecord_(user, table, record, isNew) {
       return { record: pick_(clean, def) };
     }
 
+    if (blankCell_(record[keyName]) || String(record[keyName]).trim() === '') {
+      throw appError_('INVALID', 'This record has no ID. Refresh and try again.');
+    }
     var existing = findBy_(rows, keyName, record[keyName]);
     if (!existing) throw appError_('NOT_FOUND', 'That record no longer exists. Refresh and try again.');
     var updated = {};
@@ -1194,9 +1202,21 @@ function cacheGetJson_(key) {
   try { return JSON.parse(s); } catch (e) { return null; }
 }
 
+/** A cell counts as empty when blank or an unticked checkbox (Sheets stores those as FALSE). */
+function blankCell_(v) { return v === '' || v === null || v === false; }
+
+/** Last row holding a record. Column A always holds the record's key or timestamp. */
+function lastDataRow_(sh) {
+  var last = sh.getLastRow();
+  if (last < 2) return 1;
+  var col = sh.getRange(1, 1, last, 1).getValues();
+  for (var i = col.length - 1; i >= 1; i--) if (!blankCell_(col[i][0])) return i + 1;
+  return 1;
+}
+
 function readTableFromSheet_(name) {
   var sh = sheet_(name);
-  var lastRow = sh.getLastRow(), lastCol = sh.getLastColumn();
+  var lastRow = lastDataRow_(sh), lastCol = sh.getLastColumn();
   if (lastRow < 2 || lastCol < 1) return [];
   var values = sh.getRange(1, 1, lastRow, lastCol).getValues();
   var headers = values[0];
@@ -1208,7 +1228,7 @@ function readTableFromSheet_(name) {
       var val = values[i][c];
       if (val instanceof Date) val = Utilities.formatDate(val, TZ, 'yyyy-MM-dd HH:mm:ss');
       obj[headers[c]] = val;
-      if (val !== '' && val !== null) empty = false;
+      if (!blankCell_(val)) empty = false;
     }
     if (!empty) rows.push(obj);
   }
@@ -1218,8 +1238,24 @@ function readTableFromSheet_(name) {
 function appendRow_(name, obj) {
   var sh = sheet_(name);
   var headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
-  sh.appendRow(headers.map(function (h) { return obj[h] === undefined ? '' : obj[h]; }));
+  var target = lastDataRow_(sh) + 1;
+  if (target > sh.getMaxRows()) sh.insertRowsAfter(sh.getMaxRows(), 50);
+  sh.getRange(target, 1, 1, headers.length)
+    .setValues([headers.map(function (h) { return obj[h] === undefined ? '' : obj[h]; })]);
+  boolColumns_(name, headers).forEach(function (col) {
+    sh.getRange(target, col).setDataValidation(SpreadsheetApp.newDataValidation().requireCheckbox().build());
+  });
   invalidate_(name);
+}
+
+/** 1-based column numbers of the yes/no fields of a table. */
+function boolColumns_(name, headers) {
+  var def = SCHEMA[name], out = [];
+  if (!def) return out;
+  headers.forEach(function (h, i) {
+    if (def.fields.some(function (f) { return f.name === h && f.type === 'bool'; })) out.push(i + 1);
+  });
+  return out;
 }
 
 function updateRow_(name, rowIndex, obj) {
@@ -1229,6 +1265,74 @@ function updateRow_(name, rowIndex, obj) {
   var next = headers.map(function (h, i) { return obj[h] === undefined ? current[i] : obj[h]; });
   sh.getRange(rowIndex, 1, 1, headers.length).setValues([next]);
   invalidate_(name);
+}
+
+/**
+ * One-time repair (0.2.1). Checkbox formatting on whole columns had filled
+ * every empty row with FALSE, so the app saw ~1000 blank records and edits of a
+ * blank row landed on a record without an ID. This clears the filler rows,
+ * keeps checkboxes on real rows only and gives every record that lacks an ID
+ * the next free one. Runs once, on the first request after deploy.
+ */
+var DATA_FIX_VERSION = '0.2.1';
+function ensureDataFixed_() {
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty('DATA_FIX') === DATA_FIX_VERSION) return;
+  withLock_(function () {
+    if (props.getProperty('DATA_FIX') === DATA_FIX_VERSION) return;
+    repairSheets_();
+    props.setProperty('DATA_FIX', DATA_FIX_VERSION);
+  });
+}
+
+function repairSheets_() {
+  var ss = book_();
+  var report = [];
+  Object.keys(SCHEMA).forEach(function (name) {
+    var sh = ss.getSheetByName(name);
+    if (!sh || sh.getLastRow() < 2) return;
+    var def = SCHEMA[name];
+    var cols = sh.getLastColumn();
+    var values = sh.getRange(1, 1, sh.getLastRow(), cols).getValues();
+    var headers = values[0];
+    var last = 1;
+    for (var i = values.length - 1; i >= 1; i--) {
+      if (values[i].some(function (v) { return !blankCell_(v); })) { last = i + 1; break; }
+    }
+    // Give records without an ID the next free one.
+    var keyCol = def.key ? headers.indexOf(def.key) : -1;
+    if (keyCol !== -1 && def.prefix) {
+      var max = 0;
+      values.slice(1, last).forEach(function (r) {
+        var m = String(r[keyCol]).match(/(\d+)$/);
+        if (m) max = Math.max(max, Number(m[1]));
+      });
+      for (var r = 1; r < last; r++) {
+        if (blankCell_(values[r][keyCol]) && values[r].some(function (v) { return !blankCell_(v); })) {
+          var id = def.prefix + '-' + pad_(++max, 3);
+          sh.getRange(r + 1, keyCol + 1).setValue(id);
+          report.push(name + ' row ' + (r + 1) + ' -> ' + id);
+          appendRow_('AuditLog', { Timestamp: now_(), User: 'system', Table: name, RecordId: id,
+            Action: 'repair', Field: def.key, OldValue: '', NewValue: id });
+        }
+      }
+    }
+    // Clear the filler rows below the data and keep checkboxes on real rows only.
+    var maxRows = sh.getMaxRows();
+    if (maxRows > last) {
+      var below = sh.getRange(last + 1, 1, maxRows - last, cols);
+      below.setDataValidation(null);
+      below.clearContent();
+    }
+    if (last >= 2) {
+      boolColumns_(name, headers).forEach(function (col) {
+        sh.getRange(2, col, last - 1, 1).setDataValidation(SpreadsheetApp.newDataValidation().requireCheckbox().build());
+      });
+    }
+    invalidate_(name);
+  });
+  if (report.length) console.log('Repaired IDs: ' + report.join('; '));
+  return report;
 }
 
 function audit_(userEmail, table, id, action, field, oldV, newV) {
