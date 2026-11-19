@@ -222,7 +222,7 @@
     (u.locationNames || u.locations).forEach(function (name) {
       locs.appendChild(h('span', { class: 'pill', text: name }));
     });
-    var w = state.work || { maintenance: [], transfers: [], counts: [] };
+    var w = state.work || { maintenance: [], transfers: [], counts: [], missing: [] };
     var quick = h('div', { class: 'actions left' }, h('a', { class: 'btn primary', href: '#/scan', text: 'Scan an asset' }),
       canCount() ? h('a', { class: 'btn', href: '#/count', text: 'Start a stock count' }) : null);
     var mTitle = u.role === 'Technician' ? 'Assigned to you' : u.role === 'Accounting' ? 'Maintenance (waiting for invoices first)' : 'Open maintenance';
@@ -231,7 +231,8 @@
     shell('home', h('div', { class: 'stack' }, card, h('section', { class: 'card' }, searchBox(), quick),
       w.transfers.length ? workList('Transfers waiting for receipt', w.transfers, transferRow, '') : null,
       u.role === 'CountTeam' ? null : workList(mTitle, mItems, requestRow, 'Nothing open.'),
-      w.counts.length ? workList('Counts in progress', w.counts, countRow, '') : null));
+      w.counts.length ? workList('Counts in progress', w.counts, countRow, '') : null,
+      (w.missing || []).length ? workList('Missing assets', w.missing, missingRow, '') : null));
     loadWork().then(function (fresh) {
       if (location.hash.replace(/^#\/?/, '').split('/')[0] !== 'home' && location.hash !== '' ) return;
       if (fresh && JSON.stringify(fresh) !== JSON.stringify(w)) renderHome();
@@ -667,7 +668,7 @@
     });
     return h('div', { class: 'card assetcard' },
       h('div', { class: 'assethead' }, h('div', null, h('div', { class: 'code', text: a.AssetCode }), h('h3', { text: a.Name })),
-        h('span', { class: 'badge ' + (a.Status === 'Active' ? 'on' : a.Status === 'Under review' ? 'warn' : ''), text: a.Status })),
+        statusBadge(a.Status)),
       h('dl', { class: 'kv' }, rows.filter(function (r) { return r[1] !== '' && r[1] !== undefined && r[1] !== null; }).map(function (r) {
         return [h('dt', { text: r[0] }), h('dd', { text: String(r[1]) })];
       })),
@@ -1135,7 +1136,7 @@
   function fmtTime(s) { return String(s || '').slice(0, 16); }
   function statusBadge(st) {
     var cls = { 'Open': 'warn', 'In progress': 'warn', 'Work done': 'on', 'Closed': '', 'Cancelled': 'off',
-      'Awaiting receipt': 'warn', 'Received': 'on', 'Finished': 'on', 'Active': 'on', 'In maintenance': 'warn', 'Under review': 'warn', 'Disposed': 'off' }[st];
+      'Awaiting receipt': 'warn', 'Received': 'on', 'Finished': 'on', 'Active': 'on', 'In maintenance': 'warn', 'Under review': 'warn', 'Missing': 'off', 'Disposed': 'off' }[st];
     return h('span', { class: 'badge ' + (cls || ''), text: st });
   }
   function textarea(value, max) {
@@ -1249,6 +1250,12 @@
       h('div', null, h('div', { class: 'strong' }, h('span', { class: 'code', text: t.TransferId }), ' ', t.AssetName || t.AssetCode),
         h('div', { class: 'muted small', text: t.FromName + ' → ' + t.ToName + ' · ' + fmtTime(t.RequestedAt) })),
       statusBadge(t.Status));
+  }
+  function missingRow(m) {
+    return h('a', { class: 'workitem', href: '#/scan/' + m.code },
+      h('div', null, h('div', { class: 'strong' }, h('span', { class: 'code', text: m.code }), ' ', m.name),
+        h('div', { class: 'muted small', text: [m.location, m.since ? 'since ' + fmtTime(m.since) : '', m.count].filter(String).join(' · ') })),
+      statusBadge('Missing'));
   }
   function countRow(c) {
     return h('a', { class: 'workitem', href: '#/count/' + c.CountId },
@@ -1482,6 +1489,20 @@
       }
       tb.appendChild(tact);
       box.appendChild(tb);
+    }
+    if (asset.Status === 'Missing') {
+      var mb = h('div', { class: 'card notice missing' }, h('div', { class: 'strong', text: 'Marked missing' + (asset.MissingCount ? ' in count ' + asset.MissingCount : '') }),
+        h('div', { class: 'small', text: (asset.MissingSince ? 'Since ' + fmtTime(asset.MissingSince) + '. ' : '') + 'It becomes active again when it is scanned in a count, or when its location marks it found.' }));
+      if (ctx.canMarkFound) {
+        var fb = h('button', { class: 'btn primary', text: 'Mark as found' });
+        fb.addEventListener('click', function () {
+          fb.disabled = true;
+          api('markFound', { code: asset.AssetCode }).then(function (d) { toast('Marked found'); loadWork(); rerender(d.asset, d.context); })
+            .catch(function (e) { fb.disabled = false; toast(e.message); });
+        });
+        mb.appendChild(h('div', { class: 'actions' }, fb));
+      }
+      box.appendChild(mb);
     }
     var acts = h('div', { class: 'actions left' });
     if (ctx.canRequestMaintenance) acts.appendChild(h('button', { class: 'btn primary', text: 'Request maintenance', onclick: function () {

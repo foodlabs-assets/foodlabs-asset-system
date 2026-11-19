@@ -38,7 +38,7 @@ test('set up locations, people and three active assets', () => {
   const boot = ok(rima('bootstrap'));
   assert.deepStrictEqual(boot.lists.Technicians, [{ id: tokens.ali, name: 'ali' }]);
   assert(boot.lists.MaintenanceTypes.indexOf('Breakdown') !== -1);
-  assert.deepStrictEqual(boot.work, { maintenance: [], transfers: [], counts: [] });
+  assert.deepStrictEqual(boot.work, { maintenance: [], transfers: [], counts: [], missing: [] });
 });
 
 let MR;
@@ -153,7 +153,15 @@ test('stock count: found, found elsewhere, unknown and missing', () => {
   assert.strictEqual(sam('countScans', { id, codes: ['FL-000002'] }).error.code, 'NOT_FOUND');
   const a3 = env.ctx.readTableFromSheet_('Assets').find((a) => a.AssetCode === 'FL-000003');
   assert(a3.LastCountAt && a3.LastCountBy === tokens.sam);
-  assert.strictEqual(env.ctx.readTableFromSheet_('Assets').find((a) => a.AssetCode === 'FL-000002').LastCountAt, '');
+  const a2 = env.ctx.readTableFromSheet_('Assets').find((a) => a.AssetCode === 'FL-000002');
+  assert.strictEqual(a2.LastCountAt, '');
+  assert.strictEqual(a2.Status, 'Missing', 'not scanned: marked missing');
+  assert.strictEqual(a2.MissingCount, id);
+  const lk = ok(sam('lookup', { code: 'FL-000002' }));
+  assert(lk.context.canMarkFound && !lk.context.canTransfer && !lk.context.canRequestMaintenance);
+  assert.strictEqual(sam('requestMaintenance', { code: 'FL-000002', request: { Type: 'Other', Description: 'x' } }).error.code, 'INVALID');
+  assert.deepStrictEqual(ok(admin('work')).missing.map((m) => m.code), ['FL-000002']);
+  assert.deepStrictEqual(ok(rima('work')).missing, [], 'not her location');
   assert(ok(admin('notices')).items.some((n) => /missing/.test(n.text)));
   ok(sam('count', { id }));
   assert.strictEqual(rima('count', { id }).error.code, 'FORBIDDEN');
@@ -161,6 +169,20 @@ test('stock count: found, found elsewhere, unknown and missing', () => {
   const c2 = ok(count('startCount', { locationId: L1 })).count.CountId;
   assert.strictEqual(rima('cancelCount', { id: c2 }).error.code, 'FORBIDDEN');
   ok(count('cancelCount', { id: c2 }));
+});
+
+test('a missing asset comes back when scanned in a later count, or when its location marks it found', () => {
+  const c = ok(count('startCount', { locationId: L2 })).count.CountId;
+  const r = ok(count('countScans', { id: c, codes: ['FL-000002'] }));
+  assert.strictEqual(r.results[0].result, 'found');
+  assert.strictEqual(env.ctx.readTableFromSheet_('Assets').find((a) => a.AssetCode === 'FL-000002').Status, 'Active');
+  assert(ok(acc('notices')).items.some((n) => /found again/.test(n.text)));
+  // Finish without FL-000003: it goes missing; the kitchen manager then marks it found.
+  ok(count('countScans', { id: c, codes: [], finish: true }));
+  assert.strictEqual(env.ctx.readTableFromSheet_('Assets').find((a) => a.AssetCode === 'FL-000003').Status, 'Missing');
+  assert.strictEqual(rima('markFound', { code: 'FL-000003' }).error.code, 'FORBIDDEN');
+  assert.strictEqual(ok(sam('markFound', { code: 'FL-000003' })).asset.Status, 'Active');
+  assert.strictEqual(sam('markFound', { code: 'FL-000003' }).error.code, 'INVALID');
 });
 
 test('notifications can be marked read', () => {

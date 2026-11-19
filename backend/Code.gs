@@ -22,7 +22,7 @@ var COST_ALLOCATIONS = ['Whole company', 'Selected cost centres'];
 var LOCATION_TYPES = ['Branch', 'Central kitchen', 'Office', 'Department', 'Warehouse'];
 var ASSET_KINDS = ['Tangible', 'Intangible'];
 var CONDITIONS = ['New', 'Used', 'Damaged'];
-var ASSET_STATUSES = ['Under review', 'Active', 'In maintenance', 'Disposed'];
+var ASSET_STATUSES = ['Under review', 'Active', 'In maintenance', 'Missing', 'Disposed'];
 var FINANCE_ROLES = ['Admin', 'Accounting', 'Management'];
 var MATCH_STATUSES = ['Unmatched', 'Matched', 'Not found'];
 var MR_STATUSES = ['Open', 'In progress', 'Work done', 'Closed', 'Cancelled'];
@@ -181,6 +181,8 @@ var SCHEMA = {
       { name: 'RegisteredBy', label: 'Registered by', type: 'text' },
       { name: 'LastCountAt', label: 'Last counted', type: 'text' },
       { name: 'LastCountBy', label: 'Last counted by', type: 'text' },
+      { name: 'MissingSince', label: 'Missing since', type: 'text' },
+      { name: 'MissingCount', label: 'Missing in count', type: 'text' },
       { name: 'LegacyLineIds', label: 'Old register lines', type: 'text', finance: true },
       { name: 'PurchaseDate', label: 'Purchase date', type: 'text', finance: true },
       { name: 'Cost', label: 'Cost', type: 'number', finance: true },
@@ -564,6 +566,7 @@ function handle_(req) {
     case 'count': return countDetail_(user, p.id);
     case 'notices': return notices_(user);
     case 'readNotices': return readNotices_(user, p.ids || []);
+    case 'markFound': return markFound_(user, p.code);
     default: throw appError_('BAD_REQUEST', 'Unknown action.');
   }
 }
@@ -1362,7 +1365,7 @@ function work_(user) {
   var mine = myLocations_(user);
   var reqs = readTable_('Maintenance');
   var trs = readTable_('Transfers');
-  var out = { maintenance: [], transfers: [], counts: [] };
+  var out = { maintenance: [], transfers: [], counts: [], missing: [] };
   var open = ['Open', 'In progress', 'Work done'];
   reqs.forEach(function (r) {
     if (open.indexOf(r.Status) === -1) return;
@@ -1382,6 +1385,12 @@ function work_(user) {
     if (c.Status !== 'Open') return;
     if (isAdmin_(user) || c.StartedBy === user.Email || mine.indexOf(String(c.LocationId)) !== -1) out.counts.push(countView_(c, false));
   });
+  readTable_('Assets').forEach(function (a) {
+    if (a.Status !== 'Missing') return;
+    if (isFinance_(user) || isAdmin_(user) || mine.indexOf(String(a.LocationId)) !== -1) {
+      out.missing.push({ code: a.AssetCode, name: a.Name, location: locName_(a.LocationId), since: a.MissingSince || '', count: a.MissingCount || '' });
+    }
+  });
   out.maintenance.reverse(); out.transfers.reverse();
   return out;
 }
@@ -1398,7 +1407,8 @@ function assetContext_(user, asset) {
     openRequests: openReq,
     history: reqs.filter(function (r) { return r.Status === 'Closed'; }).slice(-10).reverse().map(function (r) { return maintenanceView_(r, fin); }),
     transfer: tr ? transferView_(tr) : null,
-    canRequestMaintenance: asset.Status !== 'Disposed' && (canActOnAsset_(user, asset)),
+    canRequestMaintenance: asset.Status !== 'Disposed' && asset.Status !== 'Missing' && canActOnAsset_(user, asset),
+    canMarkFound: asset.Status === 'Missing' && (canActOnAsset_(user, asset) || user.Role === 'CountTeam'),
     canTransfer: !tr && (asset.Status === 'Active' || asset.Status === 'In maintenance') && canActOnAsset_(user, asset),
     canReceive: !!tr && (isAdmin_(user) || mine.indexOf(String(tr.ToLocationId)) !== -1),
     canCancelTransfer: !!tr && (isAdmin_(user) || tr.RequestedBy === user.Email),
@@ -1467,6 +1477,7 @@ function requestMaintenance_(user, code, input, photos) {
   if (!asset) throw appError_('NOT_FOUND', 'Asset not found.');
   if (!canActOnAsset_(user, asset)) throw appError_('FORBIDDEN', 'You can request maintenance only for assets of your locations.');
   if (asset.Status === 'Disposed') throw appError_('INVALID', 'This asset is disposed.');
+  if (asset.Status === 'Missing') throw appError_('INVALID', 'This asset is marked missing. Mark it found first.');
   var types = String(setting_('MaintenanceTypes') || '').split(',').map(function (x) { return x.trim(); }).filter(String);
   var type = longText_('Type', input.Type, 60);
   if (types.length && types.indexOf(type) === -1) throw appError_('INVALID', 'Choose the type from the list.');
@@ -1760,6 +1771,16 @@ function countScans_(user, id, codes, finish) {
       if (code.indexOf(',') === -1) unknown = addCode_(unknown, code);
       return { code: code, result: 'unknown' };
     }).filter(Boolean);
+    // A missing asset that turns up in any count is active again.
+    var back = results.filter(function (r) { return r.result !== 'unknown'; }).map(function (r) { return findBy_(assets, 'AssetCode', r.code); })
+      .filter(function (a) { return a && a.Status === 'Missing'; });
+    back.forEach(function (a) {
+      updateRow_('Assets', a.__row, { Status: 'Active', MissingSince: '', MissingCount: '', UpdatedAt: now_(), UpdatedBy: user.Email });
+      a.Status = 'Active';
+      audit_(user.Email, 'Assets', a.AssetCode, 'update', 'Status', 'Missing', 'Active (found in ' + c.CountId + ')');
+    });
+    if (back.length) notify_(usersWithRole_(['Admin', 'Accounting']), back.length + ' missing asset(s) found again in count ' + c.CountId + ': ' +
+      back.map(function (a) { return a.AssetCode; }).join(', ') + '.', '#/count/' + c.CountId);
     var upd = { Found: found, Elsewhere: elsewhere, Unknown: unknown, UpdatedAt: now_(), UpdatedBy: user.Email };
     if (finish) {
       var seen = splitIds_(found);
@@ -1770,6 +1791,13 @@ function countScans_(user, id, codes, finish) {
       var stamp = now_();
       setColumns_('Assets', assets.filter(function (a) { return seen.indexOf(a.AssetCode) !== -1; }).map(function (a) { return a.__row; }),
         { LastCountAt: stamp, LastCountBy: user.Email });
+      // Not scanned: an active asset becomes Missing until it is found again.
+      // Assets in maintenance may be at a workshop and assets under review are still being matched: reported only.
+      var missingCodes = splitIds_(upd.Missing);
+      var nowMissing = assets.filter(function (a) { return missingCodes.indexOf(a.AssetCode) !== -1 && a.Status === 'Active'; });
+      setColumns_('Assets', nowMissing.map(function (a) { return a.__row; }),
+        { Status: 'Missing', MissingSince: stamp, MissingCount: c.CountId, UpdatedAt: stamp, UpdatedBy: user.Email });
+      nowMissing.forEach(function (a) { audit_(user.Email, 'Assets', a.AssetCode, 'update', 'Status', 'Active', 'Missing (' + c.CountId + ')'); });
       audit_(user.Email, 'Counts', c.CountId, 'update', 'Status', 'Open', 'Finished: ' + seen.length + ' found, ' +
         splitIds_(upd.Missing).length + ' missing, ' + splitIds_(elsewhere).length + ' elsewhere');
       if (splitIds_(upd.Missing).length || splitIds_(elsewhere).length) {
@@ -1780,6 +1808,22 @@ function countScans_(user, id, codes, finish) {
     updateRow_('Counts', c.__row, upd);
     var fresh = findBy_(readTableFromSheet_('Counts'), 'CountId', c.CountId);
     return { results: results, count: countView_(fresh, finish) };
+  });
+}
+
+/** Someone at the location found a missing asset outside a count. */
+function markFound_(user, code) {
+  return withLock_(function () {
+    var rows = readTableFromSheet_('Assets');
+    var a = findBy_(rows, 'AssetCode', String(code || '').toUpperCase());
+    if (!a) throw appError_('NOT_FOUND', 'Asset not found.');
+    if (a.Status !== 'Missing') throw appError_('INVALID', 'This asset is not marked missing.');
+    if (!canActOnAsset_(user, a) && user.Role !== 'CountTeam') throw appError_('FORBIDDEN', 'Only its location or admin can mark it found.');
+    updateRow_('Assets', a.__row, { Status: 'Active', MissingSince: '', MissingCount: '', UpdatedAt: now_(), UpdatedBy: user.Email });
+    audit_(user.Email, 'Assets', a.AssetCode, 'update', 'Status', 'Missing', 'Active (marked found)');
+    notify_(usersWithRole_(['Admin', 'Accounting']), (a.Name || a.AssetCode) + ' (' + a.AssetCode + ') was found at ' + locName_(a.LocationId) + '.', '#/scan/' + a.AssetCode);
+    var fresh = findBy_(readTableFromSheet_('Assets'), 'AssetCode', a.AssetCode);
+    return { asset: assetView_(fresh, isFinance_(user)), context: assetContext_(user, fresh) };
   });
 }
 

@@ -151,8 +151,19 @@ try:
         sam.wait_for_selector('.workitem >> text=FL-000002')
         sam.screenshot(path=f'{SHOTS}/p3-09-count-report.png', full_page=True)
 
-        # 6. Admin: search, bell after count, history on the card
+        # Not scanned: FL-000002 is now missing; the kitchen manager finds it
+        sam.goto('http://localhost:%s/index.html#/scan/FL-000002' % PORT_S)
+        sam.wait_for_selector('text=Marked missing in count CNT-001')
+        assert not sam.is_visible('text=Request maintenance')
+        sam.screenshot(path=f'{SHOTS}/p3-09b-missing.png', full_page=True)
+
+        # 6. Admin: missing list, search, bell after count, history on the card
         adm = page_for('osama', desk)
+        adm.wait_for_selector('h3:has-text("Missing assets")')
+        adm.wait_for_selector('.workitem:has-text("FL-000002") >> text=Missing')
+        sam.click('text=Mark as found')
+        sam.wait_for_selector('#toast.show >> text=Marked found')
+        sam.wait_for_selector('.assetcard .badge >> text=Active')
         adm.fill('.search.big', 'oven'); adm.press('.search.big', 'Enter')
         adm.wait_for_selector('.searchout .workitem >> text=Combi oven 3')
         adm.fill('.search.big', 'SN-1'); adm.press('.search.big', 'Enter')

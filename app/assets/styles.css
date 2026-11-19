@@ -283,3 +283,5 @@ a.btn.primary { color: var(--brand-ink); }
   .topbar .brand span { display: inline; }
 }
 .scan, .stack { grid-template-columns: minmax(0, 1fr); }
+.notice.missing { background: var(--danger-soft); color: var(--danger); display: grid; gap: 4px; }
+.notice.missing .actions { justify-content: flex-start; }
