@@ -66,8 +66,18 @@
   }
 
   // ------------------------------------------------------------------ api
-  function api(action, payload) {
+  function api(action, payload, attempt) {
     if (!CFG.backendUrl) return Promise.reject(new Error('The app is not connected to its backend yet.'));
+    attempt = attempt || 0;
+    return apiOnce(action, payload).catch(function (err) {
+      // The server is busy for a moment after an update or during a big write: try again.
+      if (err.code === 'BUSY' && attempt < 3) {
+        return new Promise(function (r) { setTimeout(r, 2500 * (attempt + 1)); }).then(function () { return api(action, payload, attempt + 1); });
+      }
+      throw err;
+    });
+  }
+  function apiOnce(action, payload) {
     return fetch(CFG.backendUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
@@ -134,6 +144,8 @@
     state.assets = boot.assets || [];
     state.legacy = boot.legacy || [];
     state.batches = boot.labelBatches || [];
+    state.work = boot.work || { maintenance: [], transfers: [], counts: [] };
+    state.notices = boot.notices || { unread: 0, items: [] };
   }
   function loadSession() {
     var shown = false;
@@ -163,12 +175,15 @@
     clear(root);
     var u = state.user;
     var items = [['home', 'Home'], ['scan', 'Scan']];
+    if (u.role !== 'CountTeam') items.push(['maintenance', 'Maintenance']);
+    if (canCount()) items.push(['count', 'Count']);
     if (u.canAdmin) items = items.concat([['labels', 'Labels'], ['matching', 'Matching'], ['recon', 'Reconciliation'], ['admin', 'Admin']]);
     var nav = items.map(function (it) { return h('a', { href: '#/' + it[0], class: active === it[0] ? 'active' : '', text: it[1] }); });
     root.appendChild(h('header', { class: 'topbar' },
       h('div', { class: 'brand' }, h('img', { src: 'assets/icon.svg', alt: '' }), h('span', { text: 'Foodlabs Assets' })),
       h('nav', null, nav),
       h('div', { class: 'spacer' }),
+      bell(),
       h('div', { class: 'userchip' },
         h('div', { class: 'who' }, u.name, h('small', { text: u.role })),
         h('div', { class: 'avatar', text: initials(u.name) }),
@@ -189,6 +204,8 @@
     if (parts[0] === 'labels' && state.user.canAdmin) return renderLabels();
     if (parts[0] === 'matching' && state.user.canAdmin) return renderMatching();
     if (parts[0] === 'recon' && state.user.canAdmin) return renderRecon();
+    if (parts[0] === 'maintenance') return renderMaintenance(parts[1] ? decodeURIComponent(parts[1]).toUpperCase() : '');
+    if (parts[0] === 'count' && canCount()) return parts[1] ? renderCount(decodeURIComponent(parts[1]).toUpperCase()) : renderCountStart();
     renderHome();
   }
   window.addEventListener('hashchange', route);
@@ -205,7 +222,20 @@
     (u.locationNames || u.locations).forEach(function (name) {
       locs.appendChild(h('span', { class: 'pill', text: name }));
     });
-    shell('home', card);
+    var w = state.work || { maintenance: [], transfers: [], counts: [] };
+    var quick = h('div', { class: 'actions left' }, h('a', { class: 'btn primary', href: '#/scan', text: 'Scan an asset' }),
+      canCount() ? h('a', { class: 'btn', href: '#/count', text: 'Start a stock count' }) : null);
+    var mTitle = u.role === 'Technician' ? 'Assigned to you' : u.role === 'Accounting' ? 'Maintenance (waiting for invoices first)' : 'Open maintenance';
+    var mItems = w.maintenance.slice();
+    if (u.role === 'Accounting') mItems.sort(function (a, b) { return (b.Status === 'Work done') - (a.Status === 'Work done'); });
+    shell('home', h('div', { class: 'stack' }, card, h('section', { class: 'card' }, searchBox(), quick),
+      w.transfers.length ? workList('Transfers waiting for receipt', w.transfers, transferRow, '') : null,
+      u.role === 'CountTeam' ? null : workList(mTitle, mItems, requestRow, 'Nothing open.'),
+      w.counts.length ? workList('Counts in progress', w.counts, countRow, '') : null));
+    loadWork().then(function (fresh) {
+      if (location.hash.replace(/^#\/?/, '').split('/')[0] !== 'home' && location.hash !== '' ) return;
+      if (fresh && JSON.stringify(fresh) !== JSON.stringify(w)) renderHome();
+    });
   }
 
   // ---------------------------------------------------------------- admin
@@ -337,6 +367,7 @@
         sel.appendChild(h('option', { value: '', text: '—' }));
         var opts = f.type === 'select' ? f.options.map(function (o) { return [o, o]; }) :
           (state.cache[f.table] || []).filter(function (r) { return isTrue(r.Active) || String(r[state.meta.tables[f.table].key]) === String(val); })
+            .filter(function (r) { return !f.refFilter || Object.keys(f.refFilter).every(function (k) { return r[k] === f.refFilter[k]; }); })
             .map(function (r) { return [r[state.meta.tables[f.table].key], rowLabel(f.table, r)]; });
         opts.forEach(function (o) {
           if (tableName === 'Users' && f.name === 'Role' && o[0] === 'Admin' && state.user.role !== 'Admin' && val !== 'Admin') return;
@@ -526,7 +557,7 @@
   function renderScan(initial) {
     var camBox = h('div', { id: 'cam', class: 'cam' });
     var camBtn = h('button', { class: 'btn primary', text: 'Start camera' });
-    var input = h('input', { class: 'scaninput', type: 'text', placeholder: 'FL-000123', autocomplete: 'off', autocapitalize: 'characters', 'aria-label': 'Asset code' });
+    var input = h('input', { class: 'scaninput', type: 'text', placeholder: 'FL-000123 or a name', autocomplete: 'off', autocapitalize: 'characters', 'aria-label': 'Asset code' });
     var goBtn = h('button', { class: 'btn', text: 'Open' });
     var result = h('div', { class: 'result' });
     var scanner = null, busy = false, lastCode = '', lastAt = 0;
@@ -534,7 +565,7 @@
     shell('scan', h('div', { class: 'scan' },
       h('div', { class: 'card scanpanel' },
         h('h2', { text: 'Scan an asset' }),
-        h('div', { class: 'muted small', text: 'Use the camera, a handheld scanner, or type the code.' }),
+        h('div', { class: 'muted small', text: 'Use the camera, a handheld scanner, or type the code, a name or a serial number.' }),
         camBox,
         h('div', { class: 'scanrow' }, camBtn),
         h('form', { class: 'scanrow', onsubmit: function (e) { e.preventDefault(); open(input.value); } }, input, goBtn)),
@@ -571,13 +602,24 @@
       var code = String(raw || '').trim().toUpperCase();
       if (!code) return;
       input.value = '';
+      if (/^MR-\d+$/.test(code)) { location.hash = '#/maintenance/' + code; return; }
+      if (/^CNT-\d+$/.test(code)) { location.hash = '#/count/' + code; return; }
+      if (!/^[A-Z]{1,5}X?-\d{6}$/.test(code)) { clear(result); result.appendChild(searchBox()); var si = result.querySelector('input'); si.value = raw; si.form.requestSubmit ? si.form.requestSubmit() : si.form.dispatchEvent(new Event('submit')); return; }
       busy = true;
       clear(result);
       result.appendChild(h('div', { class: 'card' }, h('div', { class: 'spinner' })));
       api('lookup', { code: code }).then(function (r) {
         busy = false;
         clear(result);
-        if (r.status === 'registered') return result.appendChild(assetCard(r.asset));
+        if (r.status === 'registered') {
+          var paint = function (asset, ctx) {
+            clear(result);
+            result.appendChild(assetCard(asset));
+            var ops = assetOps(asset, ctx, code, paint);
+            if (ops) result.appendChild(ops);
+          };
+          return paint(r.asset, r.context);
+        }
         if (r.status === 'unregistered') {
           if (r.canRegister) return result.appendChild(registerForm(r.code, function (asset) {
             clear(result);
@@ -1084,6 +1126,569 @@
     box.appendChild(d.rows.length ? h('div', { class: 'tablewrap' }, h('table', { class: 'datatable static' },
       h('thead', null, h('tr', null, ['Account', 'In the app', 'In Xero', 'Difference', 'Assets'].map(function (t) { return h('th', { text: t }); }))), tbody))
       : h('div', { class: 'empty', text: 'Nothing to reconcile yet. Match assets and set accounts on the categories first.' }));
+  }
+
+  // =================================================================
+  // Phase 3: maintenance, transfers, stock counts, notifications
+  // =================================================================
+
+  function fmtTime(s) { return String(s || '').slice(0, 16); }
+  function statusBadge(st) {
+    var cls = { 'Open': 'warn', 'In progress': 'warn', 'Work done': 'on', 'Closed': '', 'Cancelled': 'off',
+      'Awaiting receipt': 'warn', 'Received': 'on', 'Finished': 'on', 'Active': 'on', 'In maintenance': 'warn', 'Under review': 'warn', 'Disposed': 'off' }[st];
+    return h('span', { class: 'badge ' + (cls || ''), text: st });
+  }
+  function textarea(value, max) {
+    return h('textarea', { rows: '3', maxlength: String(max || 1000), class: 'ta', text: value || '' });
+  }
+  function readFiles(input, allowPdf) {
+    var files = Array.prototype.slice.call(input.files || []);
+    input.value = '';
+    return Promise.all(files.slice(0, 4).map(function (f) {
+      if (/^image\//.test(f.type)) return compressImage(f);
+      if (allowPdf && f.type === 'application/pdf') {
+        if (f.size > 3500000) return Promise.reject(new Error(f.name + ' is larger than 3.5 MB.'));
+        return new Promise(function (res, rej) { var r = new FileReader(); r.onload = function () { res(r.result); }; r.onerror = rej; r.readAsDataURL(f); });
+      }
+      return Promise.reject(new Error(f.name + ': attach ' + (allowPdf ? 'a PDF or an image.' : 'an image.')));
+    }));
+  }
+  function filePicker(label, allowPdf, capture) {
+    var input = h('input', { type: 'file', accept: allowPdf ? 'image/*,application/pdf' : 'image/*', multiple: true });
+    if (capture) input.setAttribute('capture', 'environment');
+    var list = h('div', { class: 'thumbs' });
+    var files = [];
+    input.addEventListener('change', function () {
+      readFiles(input, allowPdf).then(function (data) {
+        data.forEach(function (d) {
+          if (files.length >= 4) return;
+          files.push(d);
+          var isPdf = /^data:application\/pdf/.test(d);
+          var t = h('div', { class: 'thumb' + (isPdf ? ' pdf' : '') }, isPdf ? h('div', { class: 'pdficon', text: 'PDF' }) : h('img', { src: d, alt: '' }),
+            h('button', { type: 'button', class: 'x', 'aria-label': 'Remove', text: '×', onclick: function () { files.splice(files.indexOf(d), 1); list.removeChild(t); } }));
+          list.appendChild(t);
+        });
+      }).catch(function (e) { toast(e.message); });
+    });
+    return { el: h('div', null, h('label', { class: 'btn filebtn' }, label, input), list), files: files };
+  }
+  function openFile(btn, id, fileId) {
+    btn.disabled = true;
+    api('file', { id: id, fileId: fileId }).then(function (d) {
+      btn.disabled = false;
+      if (/^data:image\//.test(d.dataUrl)) {
+        var img = h('img', { src: d.dataUrl, alt: '' });
+        btn.parentNode.replaceChild(img, btn);
+      } else {
+        var bytes = atob(d.dataUrl.split(',')[1]); var arr = new Uint8Array(bytes.length);
+        for (var i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+        var url = URL.createObjectURL(new Blob([arr], { type: d.dataUrl.slice(5, d.dataUrl.indexOf(';')) }));
+        var a = h('a', { href: url, target: '_blank', rel: 'noopener', download: d.name || 'invoice.pdf' });
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      }
+    }).catch(function (e) { btn.disabled = false; toast(e.message); });
+  }
+
+  // ----- Notifications bell
+  function bell() {
+    var n = state.notices || { unread: 0, items: [] };
+    var btn = h('button', { class: 'iconbtn bell', title: 'Notifications', 'aria-label': 'Notifications' });
+    btn.innerHTML = '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22Zm7-6V11a7 7 0 0 0-5.5-6.84V3.5a1.5 1.5 0 0 0-3 0v.66A7 7 0 0 0 5 11v5l-2 2v1h18v-1Z"/></svg>';
+    if (n.unread) btn.appendChild(h('span', { class: 'dot', text: n.unread > 9 ? '9+' : String(n.unread) }));
+    btn.addEventListener('click', function (e) { e.stopPropagation(); toggleNotices(btn); });
+    return btn;
+  }
+  function toggleNotices(anchor) {
+    var old = document.querySelector('.noticepanel');
+    if (old) { old.parentNode.removeChild(old); return; }
+    var n = state.notices || { unread: 0, items: [] };
+    var panel = h('div', { class: 'noticepanel', role: 'dialog' },
+      h('div', { class: 'row-between' }, h('strong', { text: 'Notifications' }),
+        n.unread ? h('button', { class: 'linkbtn', text: 'Mark all read', onclick: function () { markRead('all'); panel.parentNode.removeChild(panel); } }) : null),
+      n.items.length ? h('div', { class: 'noticelist' }, n.items.map(function (it) {
+        return h('a', { class: 'noticeitem' + (it.read ? '' : ' unread'), href: it.link || '#/home', onclick: function () {
+          if (!it.read) markRead([it.id]);
+          if (panel.parentNode) panel.parentNode.removeChild(panel);
+        } }, h('div', { text: it.text }), h('small', { text: fmtTime(it.at) }));
+      })) : h('div', { class: 'muted small pad', text: 'Nothing yet.' }));
+    document.body.appendChild(panel);
+    var close = function (e) { if (!panel.contains(e.target)) { if (panel.parentNode) panel.parentNode.removeChild(panel); document.removeEventListener('click', close); } };
+    setTimeout(function () { document.addEventListener('click', close); }, 0);
+  }
+  function markRead(ids) {
+    api('readNotices', { ids: ids }).then(function (d) { state.notices = d; refreshBell(); }).catch(function () {});
+  }
+  function refreshBell() {
+    var old = document.querySelector('.topbar .bell');
+    if (old) old.parentNode.replaceChild(bell(), old);
+  }
+  function pollNotices() {
+    if (!state.user || document.hidden) return;
+    api('notices').then(function (d) { state.notices = d; refreshBell(); }).catch(function () {});
+  }
+  setInterval(pollNotices, 120000);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) pollNotices(); });
+
+  // ----- Home: search and what is waiting for me
+  function canCount() {
+    var r = state.user.role;
+    return state.user.canAdmin || r === 'CountTeam' || (r === 'Manager' && state.user.locations.length > 0);
+  }
+  function workList(title, items, render, emptyText) {
+    return h('section', { class: 'card' }, h('div', { class: 'row-between' }, h('h3', { text: title }), h('span', { class: 'badge', text: String(items.length) })),
+      items.length ? h('div', { class: 'worklist' }, items.slice(0, 50).map(render)) : h('div', { class: 'muted small', text: emptyText }));
+  }
+  function requestRow(r) {
+    return h('a', { class: 'workitem', href: '#/maintenance/' + r.RequestId },
+      h('div', null, h('div', { class: 'strong' }, h('span', { class: 'code', text: r.RequestId }), ' ', r.AssetName || r.AssetCode),
+        h('div', { class: 'muted small', text: [r.LocationName, r.Type, r.TechnicianName ? 'Technician: ' + r.TechnicianName : 'No technician'].filter(String).join(' · ') })),
+      h('div', { class: 'right' }, r.Priority === 'Urgent' ? h('span', { class: 'badge off', text: 'Urgent' }) : null, ' ', statusBadge(r.Status)));
+  }
+  function transferRow(t) {
+    return h('a', { class: 'workitem', href: '#/scan/' + t.AssetCode },
+      h('div', null, h('div', { class: 'strong' }, h('span', { class: 'code', text: t.TransferId }), ' ', t.AssetName || t.AssetCode),
+        h('div', { class: 'muted small', text: t.FromName + ' → ' + t.ToName + ' · ' + fmtTime(t.RequestedAt) })),
+      statusBadge(t.Status));
+  }
+  function countRow(c) {
+    return h('a', { class: 'workitem', href: '#/count/' + c.CountId },
+      h('div', null, h('div', { class: 'strong' }, h('span', { class: 'code', text: c.CountId }), ' ', c.LocationName),
+        h('div', { class: 'muted small', text: c.found + ' of ' + c.Expected + ' found · started ' + fmtTime(c.StartedAt) })),
+      statusBadge(c.Status));
+  }
+  function searchBox() {
+    var input = h('input', { class: 'search big', type: 'search', placeholder: 'Code, name, serial or request number', 'aria-label': 'Search' });
+    var out = h('div', { class: 'searchout' });
+    var form = h('form', { class: 'searchform', onsubmit: function (e) { e.preventDefault(); go(input.value); } }, input, h('button', { class: 'btn primary', text: 'Search' }));
+    function go(q) {
+      q = String(q || '').trim();
+      if (!q) return;
+      var up = q.toUpperCase();
+      if (/^[A-Z]{1,5}X?-\d{6}$/.test(up)) { location.hash = '#/scan/' + up; return; }
+      if (/^MR-\d+$/.test(up)) { location.hash = '#/maintenance/' + up; return; }
+      if (/^CNT-\d+$/.test(up)) { location.hash = '#/count/' + up; return; }
+      clear(out); out.appendChild(h('div', { class: 'spinner' }));
+      api('search', { q: q }).then(function (d) {
+        clear(out);
+        var rows = d.assets.map(function (a) {
+          return h('a', { class: 'workitem', href: '#/scan/' + a.code },
+            h('div', null, h('div', { class: 'strong' }, h('span', { class: 'code', text: a.code }), ' ', a.name),
+              h('div', { class: 'muted small', text: [a.location, a.serial ? 'S/N ' + a.serial : ''].filter(String).join(' · ') })), statusBadge(a.status));
+        }).concat(d.requests.map(requestRow), d.transfers.map(transferRow));
+        out.appendChild(rows.length ? h('div', { class: 'worklist card' }, rows) : h('div', { class: 'muted small pad', text: 'Nothing found.' }));
+      }).catch(function (e) { clear(out); out.appendChild(h('div', { class: 'error', text: e.message })); });
+    }
+    return h('div', { class: 'stack' }, form, out);
+  }
+
+  // ----- Maintenance
+  function maintenanceDialog(asset, onDone) {
+    var L = state.lists;
+    var type = selectEl((L.MaintenanceTypes || []).map(function (t) { return { id: t, name: t }; }), '', { required: true });
+    var prio = selectEl([{ id: 'Normal', name: 'Normal' }, { id: 'Urgent', name: 'Urgent' }], 'Normal');
+    var desc = textarea('', 1000);
+    var cat = (L.Categories || []).filter(function (c) { return c.id === String(asset.CategoryId); })[0];
+    var loc = (L.Locations || []).filter(function (l) { return l.id === String(asset.LocationId); })[0];
+    var defTech = (cat && cat.DefaultTechnician) || (loc && loc.DefaultTechnician) || '';
+    var tech = selectEl(L.Technicians || [], String(defTech).toLowerCase(), { placeholder: (L.Technicians || []).length ? 'Choose…' : 'No technicians yet' });
+    var pics = filePicker('Add photos', false, true);
+    var err = h('div');
+    var go = h('button', { class: 'btn primary', text: 'Send request' });
+    var ov = modal('Maintenance for ' + asset.AssetCode, h('div', { class: 'body' }, err,
+      h('div', { class: 'muted small', text: asset.Name + ' · ' + listName('Locations', asset.LocationId) }),
+      h('div', { class: 'grid2' }, field('Type', type, true), field('Priority', prio)),
+      field('What is wrong?', desc, true),
+      field('Technician', tech, false, defTech ? 'Filled from the category or location. Change it if needed.' : 'Admin assigns one if left empty.'),
+      field('Photos', pics.el)), go);
+    go.addEventListener('click', function () {
+      clear(err);
+      if (!type.value || !desc.value.trim()) { err.appendChild(h('div', { class: 'error', text: 'Choose the type and describe the problem.' })); return; }
+      go.disabled = true; go.textContent = 'Sending…';
+      api('requestMaintenance', { code: asset.AssetCode, request: { Type: type.value, Priority: prio.value, Description: desc.value, Technician: tech.value }, photos: pics.files })
+        .then(function (d) { ov.close(); toast('Request ' + d.request.RequestId + ' sent'); onDone(d); })
+        .catch(function (e) { err.appendChild(h('div', { class: 'error', text: e.message })); go.disabled = false; go.textContent = 'Send request'; });
+    });
+  }
+
+  function renderMaintenance(id) {
+    if (!id) {
+      var work = state.work || { maintenance: [] };
+      var box = h('div', { class: 'stack' });
+      shell('maintenance', h('div', { class: 'stack narrowish' }, h('div', { class: 'row-between' }, h('h2', { text: 'Maintenance' }),
+        h('button', { class: 'btn', text: 'Refresh', onclick: function () { loadWork().then(function () { renderMaintenance(); }); } })),
+        h('div', { class: 'muted small', text: 'To ask for maintenance, scan the asset and choose Request maintenance.' }), box));
+      box.appendChild(workList('Open requests', work.maintenance, requestRow, 'No open requests.'));
+      return;
+    }
+    var holder = h('div', { class: 'stack narrowish' }, h('div', { class: 'card' }, h('div', { class: 'spinner' })));
+    shell('maintenance', holder);
+    api('maintenance', { id: id }).then(function (d) { paintRequest(holder, d); })
+      .catch(function (e) { clear(holder); holder.appendChild(h('div', { class: 'error', text: e.message })); });
+  }
+  function paintRequest(holder, d) {
+    var r = d.request, can = d.can, fin = state.user.isFinance;
+    clear(holder);
+    var rows = [['Asset', r.AssetCode + ' · ' + r.AssetName], ['Location', r.LocationName], ['Type', r.Type], ['Priority', r.Priority],
+      ['Problem', r.Description], ['Technician', r.TechnicianName || 'Not assigned'], ['Requested', fmtTime(r.RequestedAt) + ' · ' + r.RequestedByName],
+      ['Work done', r.WorkNotes], ['Outcome', r.Outcome], ['Work recorded', r.WorkDoneAt ? fmtTime(r.WorkDoneAt) : '']];
+    if (fin) rows = rows.concat([['Supplier', r.Supplier], ['Invoice number', r.InvoiceNo], ['Cost', r.Status === 'Closed' ? money(r.Cost) : '']]);
+    rows.push(['Closed', r.ClosedAt ? fmtTime(r.ClosedAt) : ''], ['Notes', r.Notes]);
+    var files = h('div', { class: 'photos' });
+    (r.Photos || []).forEach(function (fid) { var b = h('button', { class: 'photo', text: 'Show photo' }); b.addEventListener('click', function () { openFile(b, r.RequestId, fid); }); files.appendChild(b); });
+    (fin ? r.InvoiceFiles || [] : []).forEach(function (fid, i) { var b = h('button', { class: 'photo', text: 'Open invoice ' + (i + 1) }); b.addEventListener('click', function () { openFile(b, r.RequestId, fid); }); files.appendChild(b); });
+    holder.appendChild(h('div', { class: 'card' },
+      h('div', { class: 'assethead' }, h('div', null, h('div', { class: 'code', text: r.RequestId }), h('h3', { text: r.AssetName || r.AssetCode })), statusBadge(r.Status)),
+      h('dl', { class: 'kv' }, rows.filter(function (x) { return x[1] !== '' && x[1] !== undefined && x[1] !== null; }).map(function (x) {
+        return [h('dt', { text: x[0] }), h('dd', { text: String(x[1]) })];
+      })), files.childNodes.length ? files : null,
+      h('div', { class: 'actions' }, h('a', { class: 'btn', href: '#/scan/' + r.AssetCode, text: 'Open asset' }))));
+
+    var step = function (name, values, files, btn) {
+      btn.disabled = true;
+      return api('updateMaintenance', { id: r.RequestId, step: name, values: values || {}, files: files || [] })
+        .then(function (nd) { toast('Saved'); loadWork(); paintRequest(holder, nd); })
+        .catch(function (e) { btn.disabled = false; toast(e.message); throw e; });
+    };
+    if (can.start) {
+      var sb = h('button', { class: 'btn', text: 'Start work' });
+      sb.addEventListener('click', function () { step('start', {}, [], sb).catch(function () {}); });
+      holder.appendChild(h('div', { class: 'card row-between' }, h('div', { class: 'muted small', text: 'Let the branch know you are on it.' }), sb));
+    }
+    if (can.workDone) {
+      var notes = textarea('', 1000);
+      var outcome = selectEl(['Repaired', 'No fault found', 'Needs replacement', 'Could not repair'].map(function (o) { return { id: o, name: o }; }), '', { required: true });
+      var wb = h('button', { class: 'btn primary', text: 'Record work done' });
+      var werr = h('div');
+      wb.addEventListener('click', function () {
+        clear(werr);
+        if (!notes.value.trim() || !outcome.value) { werr.appendChild(h('div', { class: 'error', text: 'Describe the work and choose the outcome.' })); return; }
+        step('workDone', { WorkNotes: notes.value, Outcome: outcome.value }, [], wb).catch(function (e) { werr.appendChild(h('div', { class: 'error', text: e.message })); });
+      });
+      holder.appendChild(h('div', { class: 'card regform' }, h('h3', { text: 'Work done' }), werr, field('What did you do?', notes, true), field('Outcome', outcome, true), h('div', { class: 'actions' }, wb)));
+    }
+    if (can.close) {
+      var cost = h('input', { type: 'number', step: '0.001', min: '0' });
+      var supplier = h('input', { type: 'text', maxlength: '120' });
+      var inv = h('input', { type: 'text', maxlength: '60' });
+      var invFiles = filePicker('Attach invoice', true, false);
+      var cb = h('button', { class: 'btn primary', text: 'Close request' });
+      var cerr = h('div');
+      cb.addEventListener('click', function () {
+        clear(cerr);
+        if (cost.value === '') { cerr.appendChild(h('div', { class: 'error', text: 'Enter the cost (0 if there was no charge).' })); return; }
+        step('close', { Cost: cost.value, Supplier: supplier.value, InvoiceNo: inv.value }, invFiles.files, cb).catch(function (e) { cerr.appendChild(h('div', { class: 'error', text: e.message })); });
+      });
+      holder.appendChild(h('div', { class: 'card regform' }, h('h3', { text: 'Invoice and cost' }), cerr,
+        h('div', { class: 'grid2' }, field('Cost', cost, true), field('Invoice number', inv)), field('Supplier', supplier),
+        field('Invoice', invFiles.el, false, 'PDF or photo. Required when the cost is more than 0.'), h('div', { class: 'actions' }, cb)));
+    }
+    if (can.assign || can.cancel) {
+      var bar = h('div', { class: 'card row-between' });
+      if (can.assign) {
+        var tsel = selectEl(state.lists.Technicians || [], String(r.Technician || '').toLowerCase());
+        var ab = h('button', { class: 'btn', text: 'Assign' });
+        ab.addEventListener('click', function () { if (tsel.value) step('assign', { Technician: tsel.value }, [], ab).catch(function () {}); });
+        bar.appendChild(h('div', { class: 'inline' }, tsel, ab));
+      }
+      if (can.cancel) {
+        var xb = h('button', { class: 'btn danger', text: 'Cancel request' });
+        xb.addEventListener('click', function () {
+          var reason = prompt('Why is the request cancelled?');
+          if (reason === null) return;
+          step('cancel', { Reason: reason }, [], xb).catch(function () {});
+        });
+        bar.appendChild(xb);
+      }
+      holder.appendChild(bar);
+    }
+  }
+
+  // ----- Transfers and custody form
+  function transferDialog(asset, onDone) {
+    var L = state.lists;
+    var to = selectEl((L.Locations || []).filter(function (l) { return l.id !== String(asset.LocationId); }), '', { required: true });
+    var dep = selectEl(L.Departments || [], '', { placeholder: 'Keep ' + (listName('Departments', asset.DepartmentId) || 'the same') });
+    var reason = h('input', { type: 'text', maxlength: '300' });
+    var err = h('div');
+    var go = h('button', { class: 'btn primary', text: 'Send' });
+    var ov = modal('Move ' + asset.AssetCode, h('div', { class: 'body' }, err,
+      h('div', { class: 'muted small', text: asset.Name + ' · now at ' + listName('Locations', asset.LocationId) }),
+      field('Move to', to, true), field('Department there', dep), field('Reason', reason),
+      h('div', { class: 'hint', text: 'The asset stays with you until the receiving location scans it.' })), go);
+    go.addEventListener('click', function () {
+      clear(err);
+      if (!to.value) { err.appendChild(h('div', { class: 'error', text: 'Choose where it goes.' })); return; }
+      go.disabled = true;
+      api('requestTransfer', { code: asset.AssetCode, toLocationId: to.value, toDepartmentId: dep.value, reason: reason.value })
+        .then(function (d) { ov.close(); toast('Transfer ' + d.transfer.TransferId + ' sent'); onDone(d); })
+        .catch(function (e) { err.appendChild(h('div', { class: 'error', text: e.message })); go.disabled = false; });
+    });
+  }
+  function esc(s) { return String(s === undefined || s === null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function printHtml(title, body) {
+    var frame = h('iframe', { class: 'printframe', title: title });
+    document.body.appendChild(frame);
+    var doc = frame.contentWindow.document;
+    doc.open();
+    doc.write('<!doctype html><html><head><title>' + esc(title) + '</title><style>' +
+      '@page{size:A4;margin:16mm}body{font-family:Arial,Helvetica,sans-serif;color:#111;font-size:12pt}h1{font-size:18pt;margin:0 0 4mm}' +
+      '.sub{color:#555;margin-bottom:8mm}table{width:100%;border-collapse:collapse;margin-bottom:10mm}td{border:1px solid #bbb;padding:2.5mm 3mm;vertical-align:top}' +
+      'td.k{width:38%;color:#444;background:#f4f4f4}.sign{display:grid;grid-template-columns:1fr 1fr;gap:12mm;margin-top:14mm}' +
+      '.sign div{border-top:1px solid #333;padding-top:2mm;min-height:22mm}.note{font-size:10pt;color:#444;margin-top:8mm}</style></head><body>' + body + '</body></html>');
+    doc.close();
+    setTimeout(function () { frame.contentWindow.focus(); frame.contentWindow.print(); setTimeout(function () { document.body.removeChild(frame); }, 1500); }, 300);
+  }
+  function printCustody(asset, transfer) {
+    var rows = [['Asset code', asset.AssetCode], ['Asset', asset.Name], ['Category', listName('Categories', asset.CategoryId)],
+      ['Type', listName('Types', asset.TypeId)], ['Make and model', [listName('Makes', asset.MakeId), asset.Model].filter(String).join(' ')],
+      ['Serial number', asset.SerialNo], ['Condition', asset.Condition]];
+    if (transfer) rows = rows.concat([['From', transfer.FromName], ['To', transfer.ToName], ['Transfer', transfer.TransferId], ['Reason', transfer.Reason]]);
+    else rows = rows.concat([['Location', listName('Locations', asset.LocationId)], ['Department', listName('Departments', asset.DepartmentId)]]);
+    var body = '<h1>' + (transfer ? 'Asset transfer form' : 'Asset custody form') + '</h1><div class="sub">Foodlabs · printed ' + esc(new Date().toISOString().slice(0, 10)) + '</div><table>' +
+      rows.filter(function (r) { return r[1]; }).map(function (r) { return '<tr><td class="k">' + esc(r[0]) + '</td><td>' + esc(r[1]) + '</td></tr>'; }).join('') + '</table>' +
+      '<div class="sign"><div>' + (transfer ? 'Handed over by (name, signature, date)' : 'Received by (name, signature, date)') + '</div><div>' +
+      (transfer ? 'Received by (name, signature, date)' : 'Witness / manager (name, signature, date)') + '</div></div>' +
+      '<div class="note">The person receiving the asset is responsible for it until it is handed over through the asset system.</div>';
+    printHtml((transfer ? 'Transfer ' : 'Custody ') + asset.AssetCode, body);
+  }
+
+  /** Actions under the asset card: maintenance, move, receive, custody form, history. */
+  function assetOps(asset, ctx, scannedCode, rerender) {
+    if (!ctx) return null;
+    var box = h('div', { class: 'stack' });
+    if (ctx.transfer) {
+      var t = ctx.transfer;
+      var tb = h('div', { class: 'card notice transfer' },
+        h('div', { class: 'strong', text: 'On its way: ' + t.FromName + ' → ' + t.ToName }),
+        h('div', { class: 'small', text: t.TransferId + ' · asked by ' + t.RequestedByName + ' on ' + fmtTime(t.RequestedAt) + (t.Reason ? ' · ' + t.Reason : '') }));
+      var tact = h('div', { class: 'actions' });
+      if (ctx.canReceive) {
+        var rb = h('button', { class: 'btn primary', text: 'Confirm receipt' });
+        rb.addEventListener('click', function () {
+          rb.disabled = true;
+          api('receiveTransfer', { id: t.TransferId, code: scannedCode || asset.AssetCode }).then(function (d) { toast('Received'); loadWork(); rerender(d.asset, d.context); })
+            .catch(function (e) { rb.disabled = false; toast(e.message); });
+        });
+        tact.appendChild(rb);
+      }
+      tact.appendChild(h('button', { class: 'btn', text: 'Print transfer form', onclick: function () { printCustody(asset, t); } }));
+      if (ctx.canCancelTransfer) {
+        var cb = h('button', { class: 'btn', text: 'Cancel transfer' });
+        cb.addEventListener('click', function () {
+          if (!confirm('Cancel this transfer? The asset stays where it is.')) return;
+          cb.disabled = true;
+          api('cancelTransfer', { id: t.TransferId }).then(function (d) { toast('Transfer cancelled'); loadWork(); rerender(d.asset, d.context); })
+            .catch(function (e) { cb.disabled = false; toast(e.message); });
+        });
+        tact.appendChild(cb);
+      }
+      tb.appendChild(tact);
+      box.appendChild(tb);
+    }
+    var acts = h('div', { class: 'actions left' });
+    if (ctx.canRequestMaintenance) acts.appendChild(h('button', { class: 'btn primary', text: 'Request maintenance', onclick: function () {
+      maintenanceDialog(asset, function () { loadWork(); refreshAsset(asset.AssetCode, rerender); });
+    } }));
+    if (ctx.canTransfer) acts.appendChild(h('button', { class: 'btn', text: 'Move to another location', onclick: function () {
+      transferDialog(asset, function () { loadWork(); refreshAsset(asset.AssetCode, rerender); });
+    } }));
+    if (asset.Status !== 'Under review') acts.appendChild(h('button', { class: 'btn', text: 'Print custody form', onclick: function () { printCustody(asset, null); } }));
+    if (acts.childNodes.length) box.appendChild(h('div', { class: 'card' }, acts));
+    if (ctx.openRequests.length) box.appendChild(workList('Open maintenance', ctx.openRequests, requestRow, ''));
+    if (ctx.history.length || ctx.maintenanceCost) {
+      box.appendChild(workList('Maintenance history' + (ctx.maintenanceCost !== null && ctx.maintenanceCost !== undefined ? ' · total ' + money(ctx.maintenanceCost) : ''),
+        ctx.history, requestRow, 'No closed requests.'));
+    }
+    return box;
+  }
+  function refreshAsset(code, rerender) {
+    api('lookup', { code: code }).then(function (r) { if (r.status === 'registered') rerender(r.asset, r.context); }).catch(function () {});
+  }
+
+  // ----- Stock count
+  var beepCtx = null;
+  function beep(ok) {
+    try {
+      beepCtx = beepCtx || new (window.AudioContext || window.webkitAudioContext)();
+      var o = beepCtx.createOscillator(), g = beepCtx.createGain();
+      o.frequency.value = ok ? 1250 : 360; o.type = 'square';
+      g.gain.value = 0.06;
+      o.connect(g); g.connect(beepCtx.destination);
+      o.start(); o.stop(beepCtx.currentTime + (ok ? 0.08 : 0.3));
+    } catch (e) {}
+    if (navigator.vibrate) navigator.vibrate(ok ? 40 : [80, 60, 80]);
+  }
+  function renderCountStart() {
+    var u = state.user;
+    var mine = (state.lists.Locations || []).filter(function (l) {
+      return u.canAdmin || u.role === 'CountTeam' || u.locations.indexOf(l.id) !== -1;
+    });
+    var loc = selectEl(mine, mine.length === 1 ? mine[0].id : '', { required: true });
+    var err = h('div');
+    var go = h('button', { class: 'btn primary', text: 'Start count' });
+    go.addEventListener('click', function () {
+      clear(err);
+      if (!loc.value) { err.appendChild(h('div', { class: 'error', text: 'Choose the location to count.' })); return; }
+      go.disabled = true;
+      api('startCount', { locationId: loc.value }).then(function (d) { countSession = d; location.hash = '#/count/' + d.count.CountId; })
+        .catch(function (e) { go.disabled = false; err.appendChild(h('div', { class: 'error', text: e.message })); });
+    });
+    var work = (state.work && state.work.counts) || [];
+    shell('count', h('div', { class: 'stack narrowish' },
+      h('div', { class: 'card regform' }, h('h2', { text: 'Stock count' }),
+        h('div', { class: 'muted small', text: 'Pick a location, then scan every asset there. A handheld scanner works best: each scan beeps, and the list fills as you go.' }),
+        err, field('Location', loc, true), h('div', { class: 'actions' }, go)),
+      work.length ? workList('Counts in progress', work, countRow, '') : null));
+  }
+
+  var countSession = null;
+  function queueKey(id) { return 'fas_count_' + id; }
+  function renderCount(id) {
+    var holder = h('div', { class: 'stack narrowish' }, h('div', { class: 'card' }, h('div', { class: 'spinner' })));
+    shell('count', holder);
+    api('count', { id: id }).then(function (d) {
+      if (d.count.Status !== 'Open') return paintCountReport(holder, d);
+      var start = countSession && countSession.count.CountId === id ? Promise.resolve(countSession) : api('startCount', { locationId: d.count.LocationId });
+      return start.then(function (s) { countSession = s; paintCounter(holder, s); });
+    }).catch(function (e) { clear(holder); holder.appendChild(h('div', { class: 'error', text: e.message })); });
+  }
+  function paintCounter(holder, s) {
+    clear(holder);
+    var id = s.count.CountId;
+    var expected = {}; s.expected.forEach(function (e) { expected[e.code] = e.name; });
+    var seen = {}; (s.scanned || []).forEach(function (c) { seen[c] = 'synced'; });
+    var queue = []; try { queue = JSON.parse(localStorage.getItem(queueKey(id)) || '[]'); } catch (e) {}
+    queue.forEach(function (c) { seen[c] = 'queued'; });
+    var results = {}; // code -> found | elsewhere | unknown
+    (s.scanned || []).forEach(function (c) { results[c] = expected[c] ? 'found' : 'other'; });
+    var input = h('input', { class: 'scaninput', type: 'text', placeholder: 'Scan here', autocomplete: 'off', autocapitalize: 'characters', 'aria-label': 'Asset code' });
+    var stats = h('div', { class: 'stats' });
+    var feed = h('div', { class: 'feed' });
+    var syncing = false, timer = null;
+    var camBox = h('div', { id: 'cam', class: 'cam' });
+    var camBtn = h('button', { class: 'btn', text: 'Use camera' });
+    var scanner = null;
+
+    function saveQueue() { try { localStorage.setItem(queueKey(id), JSON.stringify(queue)); } catch (e) {} }
+    function paintStats() {
+      clear(stats);
+      var found = Object.keys(results).filter(function (c) { return results[c] === 'found'; }).length;
+      var other = Object.keys(results).filter(function (c) { return results[c] !== 'found'; }).length;
+      stats.appendChild(stat('Found here', found + ' of ' + s.expected.length));
+      stats.appendChild(stat('Not on this list', other));
+      stats.appendChild(stat('Waiting to save', queue.length));
+    }
+    function line(code, kind, text) {
+      var row = h('div', { class: 'feedrow ' + kind }, h('span', { class: 'code', text: code }), h('span', { text: text }));
+      feed.insertBefore(row, feed.firstChild);
+      while (feed.childNodes.length > 60) feed.removeChild(feed.lastChild);
+      return row;
+    }
+    function scan(raw) {
+      var code = String(raw || '').trim().toUpperCase();
+      input.value = '';
+      if (!code) return;
+      if (seen[code]) { beep(true); line(code, 'dup', 'Already scanned'); return; }
+      seen[code] = 'queued';
+      queue.push(code); saveQueue();
+      if (expected[code]) { results[code] = 'found'; beep(true); line(code, 'ok', expected[code]); }
+      else { results[code] = 'other'; beep(false); line(code, 'warn', 'Not recorded here, checking…').setAttribute('data-code', code); }
+      paintStats();
+      if (queue.length >= 10) sync(); else { clearTimeout(timer); timer = setTimeout(sync, 6000); }
+    }
+    function sync(finish) {
+      if (syncing) return Promise.resolve();
+      if (!queue.length && !finish) return Promise.resolve();
+      syncing = true;
+      var batch = queue.slice(0, 500);
+      return api('countScans', { id: id, codes: batch, finish: finish === true }).then(function (d) {
+        queue = queue.slice(batch.length); saveQueue();
+        d.results.forEach(function (r) {
+          seen[r.code] = 'synced';
+          var row = feed.querySelector('[data-code="' + r.code + '"]');
+          if (row && r.result !== 'found') {
+            row.lastChild.textContent = r.result === 'elsewhere' ? (r.name + ' · recorded at ' + r.location) : 'Unknown code';
+            row.className = 'feedrow ' + (r.result === 'elsewhere' ? 'warn' : 'bad');
+          }
+        });
+        syncing = false; paintStats();
+        if (finish) { try { localStorage.removeItem(queueKey(id)); } catch (e) {} countSession = null; stopCam(); loadWork(); paintCountReport(holder, d); }
+        else if (queue.length) sync();
+      }).catch(function (e) { syncing = false; toast('Not saved yet: ' + e.message); paintStats(); throw e; });
+    }
+    function stopCam() { if (scanner) { try { scanner.stop().then(function () { scanner.clear(); }).catch(function () {}); } catch (e) {} scanner = null; } camBox.classList.remove('on'); camBtn.textContent = 'Use camera'; }
+    window.FAS_stopCamera = function () { stopCam(); clearTimeout(timer); if (queue.length) sync().catch(function () {}); };
+    camBtn.addEventListener('click', function () {
+      if (scanner) return stopCam();
+      loadScript(SCAN_LIB).then(function () {
+        camBox.classList.add('on');
+        scanner = new Html5Qrcode('cam');
+        var last = '', at = 0;
+        return scanner.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 220, height: 220 } }, function (text) {
+          var now = Date.now(); if (text === last && now - at < 2500) return; last = text; at = now; scan(text);
+        });
+      }).then(function () { camBtn.textContent = 'Stop camera'; }).catch(function () { stopCam(); toast('Camera could not start.'); });
+    });
+    var finishBtn = h('button', { class: 'btn primary', text: 'Finish count' });
+    finishBtn.addEventListener('click', function () {
+      var found = Object.keys(results).filter(function (c) { return results[c] === 'found'; }).length;
+      if (!confirm('Finish the count? ' + (s.expected.length - found) + ' assets on the list were not scanned and will be reported missing.')) return;
+      finishBtn.disabled = true; finishBtn.textContent = 'Saving…';
+      sync(true).catch(function () { finishBtn.disabled = false; finishBtn.textContent = 'Finish count'; });
+    });
+    var cancelBtn = h('button', { class: 'btn', text: 'Cancel count' });
+    cancelBtn.addEventListener('click', function () {
+      if (!confirm('Cancel this count? Nothing will be recorded.')) return;
+      api('cancelCount', { id: id }).then(function () { try { localStorage.removeItem(queueKey(id)); } catch (e) {} countSession = null; stopCam(); loadWork(); location.hash = '#/count'; })
+        .catch(function (e) { toast(e.message); });
+    });
+    holder.appendChild(h('div', { class: 'card' },
+      h('div', { class: 'row-between' }, h('div', null, h('div', { class: 'code', text: id }), h('h2', { text: s.count.LocationName })), camBtn),
+      camBox,
+      h('form', { class: 'scanrow', onsubmit: function (e) { e.preventDefault(); scan(input.value); } }, input, h('button', { class: 'btn', text: 'Add' })),
+      h('div', { class: 'hint', text: 'Green beep: on this location\'s list. Low beep: not recorded here.' })));
+    holder.appendChild(stats);
+    holder.appendChild(h('div', { class: 'card' }, h('h3', { text: 'Scanned' }), feed));
+    holder.appendChild(h('div', { class: 'card row-between' }, cancelBtn, finishBtn));
+    paintStats();
+    if (queue.length) sync().catch(function () {});
+    setTimeout(function () { input.focus(); }, 50);
+    // Keep focus in the scan box so a handheld scanner always types into it.
+    holder.addEventListener('click', function (e) { if (!/INPUT|BUTTON|SELECT|TEXTAREA|A/.test(e.target.tagName)) input.focus(); });
+  }
+  function paintCountReport(holder, d) {
+    clear(holder);
+    var c = d.count, L = c.lists || { found: [], missing: [], elsewhere: [], unknown: [] };
+    var exp = h('button', { class: 'btn', text: 'Export to Excel' });
+    exp.addEventListener('click', function () {
+      var out = [['Count', c.CountId], ['Location', c.LocationName], ['Finished', c.FinishedAt], [], ['Result', 'Code', 'Asset', 'Recorded location']];
+      [['Missing', L.missing], ['Found but recorded elsewhere', L.elsewhere], ['Unknown code', L.unknown], ['Found', L.found]].forEach(function (g) {
+        g[1].forEach(function (x) { out.push([g[0], x.code, x.name || '', x.location || '']); });
+      });
+      downloadCsv('Count ' + c.CountId + '.csv', out);
+    });
+    holder.appendChild(h('div', { class: 'card' }, h('div', { class: 'row-between' },
+      h('div', null, h('div', { class: 'code', text: c.CountId }), h('h2', { text: c.LocationName })), h('div', { class: 'inline' }, statusBadge(c.Status), exp)),
+      h('div', { class: 'muted small', text: 'Started ' + fmtTime(c.StartedAt) + (c.FinishedAt ? ' · finished ' + fmtTime(c.FinishedAt) : '') })));
+    holder.appendChild(h('div', { class: 'stats' }, stat('Found here', c.found + ' of ' + c.Expected), stat('Missing', c.missing),
+      stat('From other locations', c.elsewhere), stat('Unknown codes', c.unknown)));
+    var group = function (title, list, note) {
+      if (!list.length) return null;
+      return h('section', { class: 'card' }, h('h3', { text: title + ' (' + list.length + ')' }), note ? h('div', { class: 'muted small', text: note }) : null,
+        h('div', { class: 'worklist' }, list.map(function (x) {
+          return h('a', { class: 'workitem', href: x.name ? '#/scan/' + x.code : '#/count/' + c.CountId },
+            h('div', null, h('div', { class: 'strong' }, h('span', { class: 'code', text: x.code }), ' ', x.name || ''),
+              x.location ? h('div', { class: 'muted small', text: 'Recorded at ' + x.location }) : null), x.status ? statusBadge(x.status) : null);
+        })));
+    };
+    [group('Missing', L.missing, 'On this location\'s list but not scanned. Look again, or report a loss through maintenance.'),
+      group('Found but recorded elsewhere', L.elsewhere, 'Move them on the system with a transfer, or send them back.'),
+      group('Unknown codes', L.unknown, 'Labels never printed or registered. Check them.'),
+      group('Found here', L.found)].forEach(function (x) { if (x) holder.appendChild(x); });
+  }
+
+  function loadWork() {
+    return api('work').then(function (w) { state.work = w; return w; }).catch(function () { return state.work; });
   }
 
   // ----------------------------------------------------------------- boot

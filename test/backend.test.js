@@ -11,11 +11,11 @@ test('setup creates sheets, settings and seed categories', () => {
   ['Users', 'Locations', 'Departments', 'Brands', 'Categories', 'Types', 'Settings', 'AuditLog']
     .forEach((n) => assert(env.sheets[n], 'missing ' + n));
   assert.strictEqual(env.sheets.Categories.data.length, 8);
-  assert.strictEqual(env.sheets.Settings.data.length, 7);
+  assert.strictEqual(env.sheets.Settings.data.length, 8);
   assert.strictEqual(env.props.BOOTSTRAP_ADMIN, 'osama@foodlabs.com.kw');
   env.ctx.setup(); // idempotent
   assert.strictEqual(env.sheets.Categories.data.length, 8);
-  assert.strictEqual(env.sheets.Settings.data.length, 7);
+  assert.strictEqual(env.sheets.Settings.data.length, 8);
 });
 
 env.addToken('t-osama', 'Osama@foodlabs.com.kw');
@@ -404,7 +404,7 @@ test('migration adds the cost centre sheet to an existing data sheet', () => {
   assert(boot.ok, JSON.stringify(boot));
   assert.strictEqual(boot.data.lists.CostCenters.length, 14);
   assert.strictEqual(boot.data.data.Departments[0].CostAllocation, 'Whole company');
-  assert.strictEqual(e4.props.DATA_FIX, '0.2.2');
+  assert.strictEqual(e4.props.DATA_FIX, '0.3.0');
 });
 
 console.log(`\n${passed} tests passed`);

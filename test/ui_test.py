@@ -185,7 +185,7 @@ try:
         ct.wait_for_selector('.scaninput')
         assert not ct.is_visible('nav >> text=Labels')
         ct.fill('.scaninput', 'hello'); ct.press('.scaninput', 'Enter')
-        ct.wait_for_selector('.error >> text=not a Foodlabs asset code')
+        ct.wait_for_selector('.searchout >> text=Nothing found.')
         ct.fill('.scaninput', 'FL-000500'); ct.press('.scaninput', 'Enter')
         ct.wait_for_selector('.error >> text=never printed')
         ct.click('text=Start camera')

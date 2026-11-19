@@ -10,7 +10,7 @@
  * runs on another origin and cannot send Google cookies.
  */
 
-var APP_VERSION = '0.2.2';
+var APP_VERSION = '0.3.0';
 var TZ = 'Asia/Kuwait';
 
 var ROLES = ['Admin', 'Accounting', 'Management', 'Manager', 'Technician', 'CountTeam'];
@@ -25,6 +25,11 @@ var CONDITIONS = ['New', 'Used', 'Damaged'];
 var ASSET_STATUSES = ['Under review', 'Active', 'In maintenance', 'Disposed'];
 var FINANCE_ROLES = ['Admin', 'Accounting', 'Management'];
 var MATCH_STATUSES = ['Unmatched', 'Matched', 'Not found'];
+var MR_STATUSES = ['Open', 'In progress', 'Work done', 'Closed', 'Cancelled'];
+var MR_OUTCOMES = ['Repaired', 'No fault found', 'Needs replacement', 'Could not repair'];
+var MR_PRIORITIES = ['Normal', 'Urgent'];
+var TR_STATUSES = ['Awaiting receipt', 'Received', 'Cancelled'];
+var COUNT_STATUSES = ['Open', 'Finished', 'Cancelled'];
 
 /**
  * Table definitions. Field types drive both server validation and the generic
@@ -52,6 +57,8 @@ var SCHEMA = {
       { name: 'Brand', label: 'Brand', type: 'ref', table: 'Brands' },
       { name: 'CostCenterId', label: 'Cost centre', type: 'ref', table: 'CostCenters',
         help: 'For a branch: all its depreciation goes here. Leave empty for the central kitchen and offices; the department decides.' },
+      { name: 'DefaultTechnician', label: 'Default technician', type: 'ref', table: 'Users', refFilter: { Role: 'Technician' },
+        help: 'Used for maintenance requests when the asset\'s category has no technician of its own.' },
       { name: 'Active', label: 'Active', type: 'bool', defaultValue: true }
     ]
   },
@@ -96,6 +103,8 @@ var SCHEMA = {
       { name: 'AssetAccount', label: 'Asset account', type: 'text' },
       { name: 'DeprExpenseAccount', label: 'Depreciation expense account', type: 'text' },
       { name: 'AccumDeprAccount', label: 'Accumulated depreciation account', type: 'text' },
+      { name: 'DefaultTechnician', label: 'Default technician', type: 'ref', table: 'Users', refFilter: { Role: 'Technician' },
+        help: 'Maintenance requests for this category go to this technician first. The requester can change it.' },
       { name: 'Active', label: 'Active', type: 'bool', defaultValue: true }
     ]
   },
@@ -172,6 +181,8 @@ var SCHEMA = {
       { name: 'Photos', label: 'Photos', type: 'text' },
       { name: 'RegisteredAt', label: 'Registered at', type: 'text' },
       { name: 'RegisteredBy', label: 'Registered by', type: 'text' },
+      { name: 'LastCountAt', label: 'Last counted', type: 'text' },
+      { name: 'LastCountBy', label: 'Last counted by', type: 'text' },
       { name: 'LegacyLineIds', label: 'Old register lines', type: 'text', finance: true },
       { name: 'PurchaseDate', label: 'Purchase date', type: 'text', finance: true },
       { name: 'Cost', label: 'Cost', type: 'number', finance: true },
@@ -197,6 +208,75 @@ var SCHEMA = {
       { name: 'MatchStatus' }, { name: 'MatchedAssets' }, { name: 'MatchNote' }
     ]
   },
+  Maintenance: {
+    title: 'Maintenance requests', key: 'RequestId', prefix: 'MR',
+    fields: [
+      { name: 'RequestId', label: 'Request', type: 'text', keyField: true },
+      { name: 'AssetCode', label: 'Asset', type: 'text' },
+      { name: 'LocationId', label: 'Location', type: 'ref', table: 'Locations' },
+      { name: 'Type', label: 'Type', type: 'text' },
+      { name: 'Priority', label: 'Priority', type: 'select', options: MR_PRIORITIES },
+      { name: 'Description', label: 'Description', type: 'text' },
+      { name: 'Photos', label: 'Photos', type: 'text' },
+      { name: 'Technician', label: 'Technician', type: 'text' },
+      { name: 'Status', label: 'Status', type: 'select', options: MR_STATUSES },
+      { name: 'RequestedAt', label: 'Requested at', type: 'text' },
+      { name: 'RequestedBy', label: 'Requested by', type: 'text' },
+      { name: 'WorkNotes', label: 'Work done', type: 'text' },
+      { name: 'Outcome', label: 'Outcome', type: 'select', options: MR_OUTCOMES },
+      { name: 'WorkDoneAt', label: 'Work done at', type: 'text' },
+      { name: 'WorkDoneBy', label: 'Work done by', type: 'text' },
+      { name: 'Supplier', label: 'Supplier', type: 'text', finance: true },
+      { name: 'InvoiceNo', label: 'Invoice number', type: 'text', finance: true },
+      { name: 'Cost', label: 'Cost', type: 'number', finance: true },
+      { name: 'InvoiceFiles', label: 'Invoice files', type: 'text', finance: true },
+      { name: 'ClosedAt', label: 'Closed at', type: 'text' },
+      { name: 'ClosedBy', label: 'Closed by', type: 'text' },
+      { name: 'Notes', label: 'Notes', type: 'text' }
+    ]
+  },
+  Transfers: {
+    title: 'Transfers', key: 'TransferId', prefix: 'TR',
+    fields: [
+      { name: 'TransferId', label: 'Transfer', type: 'text', keyField: true },
+      { name: 'AssetCode', label: 'Asset', type: 'text' },
+      { name: 'FromLocationId', label: 'From', type: 'ref', table: 'Locations' },
+      { name: 'ToLocationId', label: 'To', type: 'ref', table: 'Locations' },
+      { name: 'ToDepartmentId', label: 'To department', type: 'ref', table: 'Departments' },
+      { name: 'Reason', label: 'Reason', type: 'text' },
+      { name: 'Status', label: 'Status', type: 'select', options: TR_STATUSES },
+      { name: 'RequestedAt', label: 'Requested at', type: 'text' },
+      { name: 'RequestedBy', label: 'Requested by', type: 'text' },
+      { name: 'ReceivedAt', label: 'Received at', type: 'text' },
+      { name: 'ReceivedBy', label: 'Received by', type: 'text' },
+      { name: 'Notes', label: 'Notes', type: 'text' }
+    ]
+  },
+  Counts: {
+    title: 'Stock counts', key: 'CountId', prefix: 'CNT',
+    fields: [
+      { name: 'CountId', label: 'Count', type: 'text', keyField: true },
+      { name: 'LocationId', label: 'Location', type: 'ref', table: 'Locations' },
+      { name: 'Status', label: 'Status', type: 'select', options: COUNT_STATUSES },
+      { name: 'StartedAt', label: 'Started at', type: 'text' },
+      { name: 'StartedBy', label: 'Started by', type: 'text' },
+      { name: 'FinishedAt', label: 'Finished at', type: 'text' },
+      { name: 'FinishedBy', label: 'Finished by', type: 'text' },
+      { name: 'Expected', label: 'Expected', type: 'number' },
+      { name: 'Found', label: 'Found here', type: 'text' },
+      { name: 'Elsewhere', label: 'Found but recorded elsewhere', type: 'text' },
+      { name: 'Unknown', label: 'Unknown codes', type: 'text' },
+      { name: 'Missing', label: 'Missing', type: 'text' },
+      { name: 'Notes', label: 'Notes', type: 'text' }
+    ]
+  },
+  Notifications: {
+    title: 'Notifications', key: 'NoticeId', prefix: 'N', system: true,
+    fields: [
+      { name: 'NoticeId' }, { name: 'User' }, { name: 'Text' }, { name: 'Link' },
+      { name: 'CreatedAt' }, { name: 'ReadAt' }
+    ]
+  },
   AuditLog: {
     title: 'Audit log', system: true,
     fields: [
@@ -215,7 +295,8 @@ var DEFAULT_SETTINGS = [
   ['CountReminderDays', '', 'Days between stock-count reminders to managers'],
   ['WarrantyAlertDays', '', 'Days before warranty end to send an alert'],
   ['CountTeamOpen', 'FALSE', 'TRUE while the count team may register assets on blank labels'],
-  ['PhotoFolderId', '', 'Drive folder for asset photos (filled automatically)']
+  ['PhotoFolderId', '', 'Drive folder for asset photos (filled automatically)'],
+  ['MaintenanceTypes', 'Breakdown, Damage, Preventive, Loss or theft, Other', 'Choices for the type of a maintenance request, separated by commas']
 ];
 
 /** Cost centres as they are written in Xero, seeded once; edit or add more in admin. */
@@ -337,8 +418,8 @@ function formatSheets() {
   return 'Formatted';
 }
 
-var SHEET_ORDER = ['Assets', 'LegacyLines', 'LabelBatches', 'Users', 'Locations', 'Departments', 'Brands', 'CostCenters',
-  'Categories', 'Types', 'Makes', 'LabelTemplates', 'XeroBalances', 'Settings', 'AuditLog'];
+var SHEET_ORDER = ['Assets', 'Maintenance', 'Transfers', 'Counts', 'LegacyLines', 'LabelBatches', 'Users', 'Locations', 'Departments', 'Brands', 'CostCenters',
+  'Categories', 'Types', 'Makes', 'LabelTemplates', 'XeroBalances', 'Settings', 'Notifications', 'AuditLog'];
 var BRAND_GREEN = '#0f5e4b';
 
 function formatBook_(ss) {
@@ -470,6 +551,21 @@ function handle_(req) {
     case 'list': return listTable_(user, p.table);
     case 'save': return saveRecord_(user, p.table, p.record, p.isNew === true);
     case 'audit': return auditFor_(user, p.table, p.id);
+    case 'search': return search_(user, p.q);
+    case 'work': return work_(user);
+    case 'requestMaintenance': return requestMaintenance_(user, p.code, p.request || {}, p.photos || []);
+    case 'maintenance': return maintenanceDetail_(user, p.id);
+    case 'updateMaintenance': return updateMaintenance_(user, p.id, p.step, p.values || {}, p.files || []);
+    case 'file': return file_(user, p.id, p.fileId);
+    case 'requestTransfer': return requestTransfer_(user, p.code, p.toLocationId, p.toDepartmentId, p.reason);
+    case 'receiveTransfer': return receiveTransfer_(user, p.id, p.code);
+    case 'cancelTransfer': return cancelTransfer_(user, p.id);
+    case 'startCount': return startCount_(user, p.locationId);
+    case 'countScans': return countScans_(user, p.id, p.codes || [], p.finish === true);
+    case 'cancelCount': return cancelCount_(user, p.id);
+    case 'count': return countDetail_(user, p.id);
+    case 'notices': return notices_(user);
+    case 'readNotices': return readNotices_(user, p.ids || []);
     default: throw appError_('BAD_REQUEST', 'Unknown action.');
   }
 }
@@ -571,6 +667,8 @@ function bootstrap_(user) {
   });
   meta.data = data;
   meta.lists = lists_();
+  meta.work = work_(user);
+  meta.notices = notices_(user);
   meta.settings = { countTeamOpen: countOpen_(), labelPrefix: labelPrefix_() };
   if (ADMIN_ROLES.indexOf(user.Role) !== -1) {
     meta.labelBatches = readTable_('LabelBatches').map(function (r) { return pick_(r, SCHEMA.LabelBatches); });
@@ -592,17 +690,21 @@ function lists_() {
   }
   var brandNames = {};
   readTable_('Brands').forEach(function (b) { brandNames[b.BrandId] = b.Name; });
-  var locations = simple('Locations', ['Type', 'Brand', 'CostCenterId']).map(function (l) {
+  var locations = simple('Locations', ['Type', 'Brand', 'CostCenterId', 'DefaultTechnician']).map(function (l) {
     l.baseName = l.name;
     l.name = locationLabel_(l, brandNames);
     return l;
   });
   return {
-    Categories: simple('Categories', ['AssetKind']),
+    Categories: simple('Categories', ['AssetKind', 'DefaultTechnician']),
     Types: simple('Types', ['CategoryId']),
     Locations: locations,
     Departments: simple('Departments', ['CostAllocation', 'CostCenters']),
     CostCenters: simple('CostCenters'),
+    Technicians: readTable_('Users').filter(function (u) { return u.Role === 'Technician' && truthy_(u.Active); })
+      .map(function (u) { return { id: String(u.Email), name: String(u.Name || u.Email) }; }),
+    MaintenanceTypes: String(setting_('MaintenanceTypes') || 'Breakdown, Other').split(',')
+      .map(function (x) { return x.trim(); }).filter(String),
     Brands: simple('Brands'),
     Makes: simple('Makes', ['Status']),
     LabelTemplates: simple('LabelTemplates', ['WidthMm', 'HeightMm'])
@@ -762,7 +864,12 @@ function assetView_(r, finance) {
 function canSeeAsset_(user, asset) {
   if (isFinance_(user) || user.Role === 'CountTeam') return true;
   if (user.Role === 'Technician') return true;
-  return splitIds_(user.Locations).indexOf(String(asset.LocationId)) !== -1;
+  var mine = splitIds_(user.Locations);
+  if (mine.indexOf(String(asset.LocationId)) !== -1) return true;
+  // The receiving manager sees an asset on its way to them.
+  return readTable_('Transfers').some(function (t) {
+    return t.AssetCode === asset.AssetCode && t.Status === 'Awaiting receipt' && mine.indexOf(String(t.ToLocationId)) !== -1;
+  });
 }
 
 function lookupAsset_(user, code) {
@@ -771,7 +878,8 @@ function lookupAsset_(user, code) {
   var asset = findBy_(readTable_('Assets'), 'AssetCode', parsed.code);
   if (asset) {
     if (!canSeeAsset_(user, asset)) return { status: 'elsewhere', code: parsed.code };
-    return { status: 'registered', code: parsed.code, asset: assetView_(asset, isFinance_(user)) };
+    return { status: 'registered', code: parsed.code, asset: assetView_(asset, isFinance_(user)),
+      context: assetContext_(user, asset) };
   }
   if (parsed.noLabel || !isIssued_(parsed.number)) return { status: 'not_issued', code: parsed.code };
   return { status: 'unregistered', code: parsed.code, canRegister: canRegister_(user) };
@@ -1149,6 +1257,542 @@ function recon_(user) {
 
 function round3_(n) { return Math.round(Number(n) * 1000) / 1000; }
 
+// ===========================================================================
+// Phase 3: operations — maintenance, transfers, stock counts, notifications
+// ===========================================================================
+
+function isAdmin_(user) { return ADMIN_ROLES.indexOf(user.Role) !== -1; }
+function myLocations_(user) { return splitIds_(user.Locations); }
+function locName_(id) {
+  var brandNames = {};
+  readTable_('Brands').forEach(function (b) { brandNames[b.BrandId] = b.Name; });
+  var l = findBy_(readTable_('Locations'), 'LocationId', id);
+  return l ? locationLabel_(l, brandNames) : String(id || '');
+}
+function assetByCode_(code) {
+  return findBy_(readTable_('Assets'), 'AssetCode', String(code || '').trim().toUpperCase());
+}
+function userName_(email) {
+  var u = findBy_(readTable_('Users'), 'Email', email);
+  return u ? String(u.Name || u.Email) : String(email || '');
+}
+/** Managers act on assets of their own locations; admin and accounting on all. */
+function canActOnAsset_(user, asset) {
+  if (isAdmin_(user)) return true;
+  return user.Role === 'Manager' && myLocations_(user).indexOf(String(asset.LocationId)) !== -1;
+}
+function longText_(label, v, max) {
+  v = String(v === undefined || v === null ? '' : v).trim();
+  if (v.length > (max || 1000)) throw appError_('INVALID', label + ' is too long.');
+  if (/^[=+\-@]/.test(v)) v = "'" + v;
+  return v;
+}
+function addCode_(list, code) {
+  var arr = splitIds_(list);
+  if (arr.indexOf(code) === -1) arr.push(code);
+  return arr.join(',');
+}
+
+// ----- Notifications (in-app bell; e-mail comes with the scheduled jobs)
+
+function notify_(emails, text, link) {
+  var seen = {};
+  (Array.isArray(emails) ? emails : [emails]).forEach(function (e) {
+    e = String(e || '').toLowerCase();
+    if (!e || seen[e]) return;
+    seen[e] = true;
+    var rows = readTableFromSheet_('Notifications');
+    appendRow_('Notifications', { NoticeId: nextId_(rows, 'NoticeId', 'N'), User: e, Text: String(text).slice(0, 300),
+      Link: link || '', CreatedAt: now_(), ReadAt: '' });
+  });
+}
+function usersWithRole_(roles) {
+  return readTable_('Users').filter(function (u) { return roles.indexOf(u.Role) !== -1 && truthy_(u.Active); })
+    .map(function (u) { return u.Email; });
+}
+function managersOf_(locationId) {
+  return readTable_('Users').filter(function (u) {
+    return u.Role === 'Manager' && truthy_(u.Active) && splitIds_(u.Locations).indexOf(String(locationId)) !== -1;
+  }).map(function (u) { return u.Email; });
+}
+function notices_(user) {
+  var mine = readTable_('Notifications').filter(function (n) { return String(n.User).toLowerCase() === user.Email; });
+  var unread = mine.filter(function (n) { return !n.ReadAt; }).length;
+  return { unread: unread, items: mine.slice(-30).reverse().map(function (n) {
+    return { id: n.NoticeId, text: n.Text, link: n.Link, at: n.CreatedAt, read: !!n.ReadAt };
+  }) };
+}
+function readNotices_(user, ids) {
+  return withLock_(function () {
+    var rows = readTableFromSheet_('Notifications');
+    var all = ids === 'all' || (Array.isArray(ids) && ids.length === 0);
+    var hit = rows.filter(function (n) {
+      return String(n.User).toLowerCase() === user.Email && !n.ReadAt && (all || ids.indexOf(n.NoticeId) !== -1);
+    }).map(function (n) { return n.__row; });
+    setColumns_('Notifications', hit, { ReadAt: now_() });
+    return notices_(user);
+  });
+}
+
+// ----- Search: code, name, serial number, request or transfer number
+
+function search_(user, q) {
+  q = String(q || '').trim().slice(0, 100);
+  if (q.length < 2) return { assets: [], requests: [], transfers: [] };
+  var lq = q.toLowerCase();
+  var fin = isFinance_(user);
+  var assets = readTable_('Assets').filter(function (a) {
+    return canSeeAsset_(user, a) && [a.AssetCode, a.Name, a.SerialNo, a.Model].some(function (v) {
+      return String(v || '').toLowerCase().indexOf(lq) !== -1;
+    });
+  }).slice(0, 30).map(function (a) {
+    return { code: a.AssetCode, name: a.Name, location: locName_(a.LocationId), status: a.Status, serial: a.SerialNo };
+  });
+  var requests = readTable_('Maintenance').filter(function (r) {
+    return String(r.RequestId).toLowerCase() === lq && canSeeRequest_(user, r);
+  }).map(function (r) { return maintenanceView_(r, fin); });
+  var transfers = readTable_('Transfers').filter(function (t) {
+    return String(t.TransferId).toLowerCase() === lq && canSeeTransfer_(user, t);
+  }).map(transferView_);
+  return { assets: assets, requests: requests, transfers: transfers };
+}
+
+// ----- What is waiting for this user (home page)
+
+function work_(user) {
+  var fin = isFinance_(user);
+  var mine = myLocations_(user);
+  var reqs = readTable_('Maintenance');
+  var trs = readTable_('Transfers');
+  var out = { maintenance: [], transfers: [], counts: [] };
+  var open = ['Open', 'In progress', 'Work done'];
+  reqs.forEach(function (r) {
+    if (open.indexOf(r.Status) === -1) return;
+    var take = false;
+    if (user.Role === 'Technician') take = String(r.Technician).toLowerCase() === user.Email && r.Status !== 'Work done';
+    else if (isAdmin_(user)) take = true;
+    else if (user.Role === 'Manager') take = mine.indexOf(String(r.LocationId)) !== -1;
+    else if (user.Role === 'Management') take = true;
+    if (take) out.maintenance.push(maintenanceView_(r, fin));
+  });
+  trs.forEach(function (t) {
+    if (t.Status !== 'Awaiting receipt') return;
+    if (canSeeTransfer_(user, t)) out.transfers.push(transferView_(t));
+  });
+  readTable_('Counts').forEach(function (c) {
+    if (c.Status !== 'Open') return;
+    if (isAdmin_(user) || c.StartedBy === user.Email || mine.indexOf(String(c.LocationId)) !== -1) out.counts.push(countView_(c, false));
+  });
+  out.maintenance.reverse(); out.transfers.reverse();
+  return out;
+}
+
+/** Open maintenance and pending transfer for the asset card. */
+function assetContext_(user, asset) {
+  var fin = isFinance_(user);
+  var reqs = readTable_('Maintenance').filter(function (r) { return r.AssetCode === asset.AssetCode; });
+  var openReq = reqs.filter(function (r) { return ['Open', 'In progress', 'Work done'].indexOf(r.Status) !== -1; })
+    .map(function (r) { return maintenanceView_(r, fin); });
+  var tr = readTable_('Transfers').filter(function (t) { return t.AssetCode === asset.AssetCode && t.Status === 'Awaiting receipt'; })[0];
+  var mine = myLocations_(user);
+  var ctx = {
+    openRequests: openReq,
+    history: reqs.filter(function (r) { return r.Status === 'Closed'; }).slice(-10).reverse().map(function (r) { return maintenanceView_(r, fin); }),
+    transfer: tr ? transferView_(tr) : null,
+    canRequestMaintenance: asset.Status !== 'Disposed' && (canActOnAsset_(user, asset)),
+    canTransfer: !tr && (asset.Status === 'Active' || asset.Status === 'In maintenance') && canActOnAsset_(user, asset),
+    canReceive: !!tr && (isAdmin_(user) || mine.indexOf(String(tr.ToLocationId)) !== -1),
+    canCancelTransfer: !!tr && (isAdmin_(user) || tr.RequestedBy === user.Email),
+    maintenanceCost: fin ? round3_(reqs.reduce(function (s, r) { return s + (r.Status === 'Closed' ? Number(r.Cost) || 0 : 0); }, 0)) : null
+  };
+  return ctx;
+}
+
+// ----- Maintenance
+
+function canSeeRequest_(user, r) {
+  if (isFinance_(user)) return true;
+  if (user.Role === 'Technician') return String(r.Technician).toLowerCase() === user.Email;
+  if (r.RequestedBy === user.Email) return true;
+  return myLocations_(user).indexOf(String(r.LocationId)) !== -1;
+}
+function maintenanceView_(r, finance) {
+  var out = {};
+  SCHEMA.Maintenance.fields.forEach(function (f) {
+    if (f.finance && !finance) return;
+    out[f.name] = r[f.name] === undefined ? '' : r[f.name];
+  });
+  out.Photos = splitIds_(r.Photos);
+  if (finance) out.InvoiceFiles = splitIds_(r.InvoiceFiles);
+  var a = assetByCode_(r.AssetCode);
+  out.AssetName = a ? a.Name : '';
+  out.LocationName = locName_(r.LocationId);
+  out.TechnicianName = r.Technician ? userName_(r.Technician) : '';
+  out.RequestedByName = userName_(r.RequestedBy);
+  return out;
+}
+function defaultTechnician_(asset) {
+  var cat = findBy_(readTable_('Categories'), 'CategoryId', asset.CategoryId);
+  if (cat && cat.DefaultTechnician) return String(cat.DefaultTechnician).toLowerCase();
+  var loc = findBy_(readTable_('Locations'), 'LocationId', asset.LocationId);
+  if (loc && loc.DefaultTechnician) return String(loc.DefaultTechnician).toLowerCase();
+  return '';
+}
+function checkTechnician_(email) {
+  email = String(email || '').trim().toLowerCase();
+  if (!email) return '';
+  var u = findBy_(readTable_('Users'), 'Email', email);
+  if (!u || u.Role !== 'Technician' || !truthy_(u.Active)) throw appError_('INVALID', 'Pick a technician from the list.');
+  return email;
+}
+function savePrivateFiles_(prefix, files, allowPdf) {
+  if (!files.length) return [];
+  if (files.length > 4) throw appError_('INVALID', 'Up to 4 files at a time.');
+  var folder = photoFolder_();
+  return files.map(function (p, i) {
+    var m = String(p || '').match(/^data:(image\/(?:jpeg|png|webp)|application\/pdf);base64,(.+)$/);
+    if (!m || (!allowPdf && m[1] === 'application/pdf')) throw appError_('INVALID', allowPdf ? 'Attach PDF or image files.' : 'Photos must be JPEG, PNG or WebP images.');
+    var bytes = Utilities.base64Decode(m[2]);
+    if (bytes.length > 4000000) throw appError_('INVALID', 'A file is too large (4 MB at most).');
+    var ext = m[1] === 'application/pdf' ? 'pdf' : m[1] === 'image/jpeg' ? 'jpg' : m[1].split('/')[1];
+    return folder.createFile(Utilities.newBlob(bytes, m[1], prefix + '-' + (i + 1) + '.' + ext)).getId();
+  });
+}
+
+function requestMaintenance_(user, code, input, photos) {
+  var asset = assetByCode_(code);
+  if (!asset) throw appError_('NOT_FOUND', 'Asset not found.');
+  if (!canActOnAsset_(user, asset)) throw appError_('FORBIDDEN', 'You can request maintenance only for assets of your locations.');
+  if (asset.Status === 'Disposed') throw appError_('INVALID', 'This asset is disposed.');
+  var types = String(setting_('MaintenanceTypes') || '').split(',').map(function (x) { return x.trim(); }).filter(String);
+  var type = longText_('Type', input.Type, 60);
+  if (types.length && types.indexOf(type) === -1) throw appError_('INVALID', 'Choose the type from the list.');
+  var desc = longText_('Description', input.Description, 1000);
+  if (!desc) throw appError_('INVALID', 'Describe the problem.');
+  var priority = MR_PRIORITIES.indexOf(input.Priority) !== -1 ? input.Priority : 'Normal';
+  var tech = input.Technician ? checkTechnician_(input.Technician) : defaultTechnician_(asset);
+  if (photos.length > 4) throw appError_('INVALID', 'Up to 4 photos.');
+  return withLock_(function () {
+    var rows = readTableFromSheet_('Maintenance');
+    var id = nextId_(rows, 'RequestId', 'MR');
+    var rec = { RequestId: id, AssetCode: asset.AssetCode, LocationId: asset.LocationId, Type: type, Priority: priority,
+      Description: desc, Photos: savePrivateFiles_(id, photos, false).join(','), Technician: tech, Status: 'Open',
+      RequestedAt: now_(), RequestedBy: user.Email, UpdatedAt: now_(), UpdatedBy: user.Email };
+    appendRow_('Maintenance', rec);
+    audit_(user.Email, 'Maintenance', id, 'create', '', '', asset.AssetCode + ' ' + type);
+    setAssetStatus_(user, asset.AssetCode, 'In maintenance', id);
+    var link = '#/maintenance/' + id;
+    var what = id + ': ' + asset.Name + ' at ' + locName_(asset.LocationId) + (priority === 'Urgent' ? ' (urgent)' : '');
+    if (tech) notify_(tech, 'New maintenance request ' + what, link);
+    else notify_(usersWithRole_(['Admin']), 'Maintenance request ' + what + ' has no technician. Assign one.', link);
+    return { request: maintenanceView_(rec, isFinance_(user)) };
+  });
+}
+
+function setAssetStatus_(user, code, status, why) {
+  var rows = readTableFromSheet_('Assets');
+  var a = findBy_(rows, 'AssetCode', code);
+  if (!a || a.Status === status) return;
+  if (a.Status === 'Disposed' || (a.Status === 'Under review' && status !== 'Under review')) return; // never reopen
+  updateRow_('Assets', a.__row, { Status: status, UpdatedAt: now_(), UpdatedBy: user.Email });
+  audit_(user.Email, 'Assets', code, 'update', 'Status', a.Status, status + (why ? ' (' + why + ')' : ''));
+}
+
+function maintenanceDetail_(user, id) {
+  var r = findBy_(readTable_('Maintenance'), 'RequestId', String(id || '').toUpperCase());
+  if (!r || !canSeeRequest_(user, r)) throw appError_('NOT_FOUND', 'Request not found.');
+  return { request: maintenanceView_(r, isFinance_(user)), can: maintenanceCan_(user, r) };
+}
+function maintenanceCan_(user, r) {
+  var isTech = user.Role === 'Technician' && String(r.Technician).toLowerCase() === user.Email;
+  var active = ['Open', 'In progress'].indexOf(r.Status) !== -1;
+  return {
+    start: (isTech || isAdmin_(user)) && r.Status === 'Open',
+    workDone: (isTech || isAdmin_(user)) && active,
+    assign: isAdmin_(user) && active,
+    close: user.Role === 'Accounting' || user.Role === 'Admin' ? r.Status === 'Work done' : false,
+    cancel: (isAdmin_(user) || (r.RequestedBy === user.Email && r.Status === 'Open')) && active
+  };
+}
+
+function updateMaintenance_(user, id, step, values, files) {
+  return withLock_(function () {
+    var rows = readTableFromSheet_('Maintenance');
+    var r = findBy_(rows, 'RequestId', String(id || '').toUpperCase());
+    if (!r || !canSeeRequest_(user, r)) throw appError_('NOT_FOUND', 'Request not found.');
+    var can = maintenanceCan_(user, r);
+    var upd = {};
+    var link = '#/maintenance/' + r.RequestId;
+    var asset = assetByCode_(r.AssetCode) || {};
+    var label = r.RequestId + ' (' + (asset.Name || r.AssetCode) + ')';
+    if (step === 'start') {
+      if (!can.start) throw appError_('FORBIDDEN', 'You cannot start this request.');
+      upd.Status = 'In progress';
+    } else if (step === 'assign') {
+      if (!can.assign) throw appError_('FORBIDDEN', 'Only admin can reassign.');
+      upd.Technician = checkTechnician_(values.Technician);
+      if (!upd.Technician) throw appError_('INVALID', 'Pick a technician.');
+    } else if (step === 'workDone') {
+      if (!can.workDone) throw appError_('FORBIDDEN', 'Only the assigned technician can record the work.');
+      var notes = longText_('Work done', values.WorkNotes, 1000);
+      if (!notes) throw appError_('INVALID', 'Describe the work done.');
+      if (MR_OUTCOMES.indexOf(values.Outcome) === -1) throw appError_('INVALID', 'Choose the outcome.');
+      upd.Status = 'Work done'; upd.WorkNotes = notes; upd.Outcome = values.Outcome;
+      upd.WorkDoneAt = now_(); upd.WorkDoneBy = user.Email;
+    } else if (step === 'close') {
+      if (!can.close) throw appError_('FORBIDDEN', 'Accounting closes the request after the work is done.');
+      var cost = values.Cost === '' || values.Cost === undefined || values.Cost === null ? '' : Number(values.Cost);
+      if (cost === '' || !isFinite(cost) || cost < 0) throw appError_('INVALID', 'Enter the cost (0 if there was no charge).');
+      upd.Cost = round3_(cost);
+      upd.Supplier = longText_('Supplier', values.Supplier, 120);
+      upd.InvoiceNo = longText_('Invoice number', values.InvoiceNo, 60);
+      if (cost > 0 && !files.length && !splitIds_(r.InvoiceFiles).length) throw appError_('INVALID', 'Attach the invoice.');
+      var saved = savePrivateFiles_(r.RequestId + '-invoice', files, true);
+      upd.InvoiceFiles = splitIds_(r.InvoiceFiles).concat(saved).join(',');
+      upd.Status = 'Closed'; upd.ClosedAt = now_(); upd.ClosedBy = user.Email;
+    } else if (step === 'cancel') {
+      if (!can.cancel) throw appError_('FORBIDDEN', 'You cannot cancel this request.');
+      upd.Status = 'Cancelled'; upd.Notes = longText_('Reason', values.Reason, 300); upd.ClosedAt = now_(); upd.ClosedBy = user.Email;
+    } else {
+      throw appError_('BAD_REQUEST', 'Unknown step.');
+    }
+    upd.UpdatedAt = now_(); upd.UpdatedBy = user.Email;
+    updateRow_('Maintenance', r.__row, upd);
+    Object.keys(upd).forEach(function (k) {
+      if (k === 'UpdatedAt' || k === 'UpdatedBy') return;
+      audit_(user.Email, 'Maintenance', r.RequestId, 'update', k, normForCompare_(r[k]), normForCompare_(upd[k]));
+    });
+    // Asset status follows the request: back to Active once no request keeps it in maintenance.
+    if (upd.Status === 'Work done' || upd.Status === 'Cancelled' || upd.Status === 'Closed') {
+      var stillOpen = rows.some(function (x) {
+        return x.AssetCode === r.AssetCode && x.RequestId !== r.RequestId && ['Open', 'In progress'].indexOf(x.Status) !== -1;
+      });
+      if (!stillOpen) setAssetStatus_(user, r.AssetCode, 'Active', r.RequestId);
+    }
+    if (step === 'assign') notify_(upd.Technician, 'Maintenance request ' + label + ' was assigned to you.', link);
+    if (step === 'workDone') {
+      notify_(usersWithRole_(['Accounting']).concat([r.RequestedBy]), 'Work done on ' + label + ': ' + upd.Outcome + '. Waiting for the invoice.', link);
+    }
+    if (step === 'close') notify_(r.RequestedBy, 'Maintenance request ' + label + ' is closed.', link);
+    if (step === 'cancel' && r.Technician) notify_(r.Technician, 'Maintenance request ' + label + ' was cancelled.', link);
+    var fresh = findBy_(readTableFromSheet_('Maintenance'), 'RequestId', r.RequestId);
+    return { request: maintenanceView_(fresh, isFinance_(user)), can: maintenanceCan_(user, fresh) };
+  });
+}
+
+/** Photos and invoices of a request, served only to people who may see it. */
+function file_(user, id, fileId) {
+  var r = findBy_(readTable_('Maintenance'), 'RequestId', String(id || '').toUpperCase());
+  if (!r || !canSeeRequest_(user, r)) throw appError_('NOT_FOUND', 'Request not found.');
+  var allowed = splitIds_(r.Photos).concat(isFinance_(user) ? splitIds_(r.InvoiceFiles) : []);
+  if (allowed.indexOf(String(fileId)) === -1) throw appError_('NOT_FOUND', 'File not found.');
+  var blob = DriveApp.getFileById(fileId).getBlob();
+  return { dataUrl: 'data:' + blob.getContentType() + ';base64,' + Utilities.base64Encode(blob.getBytes()), name: blob.getName() };
+}
+
+// ----- Transfers: custody moves only when the receiving location scans the asset
+
+function canSeeTransfer_(user, t) {
+  if (isFinance_(user)) return true;
+  if (t.RequestedBy === user.Email) return true;
+  var mine = myLocations_(user);
+  return mine.indexOf(String(t.FromLocationId)) !== -1 || mine.indexOf(String(t.ToLocationId)) !== -1;
+}
+function transferView_(t) {
+  var out = pick_(t, SCHEMA.Transfers);
+  var a = assetByCode_(t.AssetCode);
+  out.AssetName = a ? a.Name : '';
+  out.FromName = locName_(t.FromLocationId);
+  out.ToName = locName_(t.ToLocationId);
+  out.RequestedByName = userName_(t.RequestedBy);
+  return out;
+}
+
+function requestTransfer_(user, code, toLocationId, toDepartmentId, reason) {
+  var asset = assetByCode_(code);
+  if (!asset) throw appError_('NOT_FOUND', 'Asset not found.');
+  if (!canActOnAsset_(user, asset)) throw appError_('FORBIDDEN', 'You can move only assets of your locations.');
+  if (['Active', 'In maintenance'].indexOf(asset.Status) === -1) throw appError_('INVALID', 'Only active assets can be moved.');
+  var to = findBy_(readTable_('Locations'), 'LocationId', toLocationId);
+  if (!to || !truthy_(to.Active)) throw appError_('INVALID', 'Choose where the asset goes.');
+  if (String(to.LocationId) === String(asset.LocationId)) throw appError_('INVALID', 'The asset is already at that location.');
+  if (toDepartmentId && !findBy_(readTable_('Departments'), 'DepartmentId', toDepartmentId)) throw appError_('INVALID', 'Unknown department.');
+  return withLock_(function () {
+    var rows = readTableFromSheet_('Transfers');
+    if (rows.some(function (t) { return t.AssetCode === asset.AssetCode && t.Status === 'Awaiting receipt'; })) {
+      throw appError_('INVALID', 'This asset already has a transfer waiting for receipt.');
+    }
+    var id = nextId_(rows, 'TransferId', 'TR');
+    var rec = { TransferId: id, AssetCode: asset.AssetCode, FromLocationId: asset.LocationId, ToLocationId: to.LocationId,
+      ToDepartmentId: toDepartmentId || '', Reason: longText_('Reason', reason, 300), Status: 'Awaiting receipt',
+      RequestedAt: now_(), RequestedBy: user.Email, UpdatedAt: now_(), UpdatedBy: user.Email };
+    appendRow_('Transfers', rec);
+    audit_(user.Email, 'Transfers', id, 'create', '', '', asset.AssetCode + ' ' + asset.LocationId + ' -> ' + to.LocationId);
+    notify_(managersOf_(to.LocationId).concat(usersWithRole_(['Admin'])),
+      asset.Name + ' (' + asset.AssetCode + ') is on its way to ' + locName_(to.LocationId) + '. Scan it when it arrives.', '#/scan/' + asset.AssetCode);
+    return { transfer: transferView_(rec) };
+  });
+}
+
+function receiveTransfer_(user, id, code) {
+  return withLock_(function () {
+    var rows = readTableFromSheet_('Transfers');
+    var t = findBy_(rows, 'TransferId', String(id || '').toUpperCase());
+    if (!t || t.Status !== 'Awaiting receipt') throw appError_('NOT_FOUND', 'No transfer waiting for receipt.');
+    if (String(code || '').toUpperCase() !== t.AssetCode) throw appError_('INVALID', 'Scan the asset itself to confirm receipt.');
+    if (!isAdmin_(user) && myLocations_(user).indexOf(String(t.ToLocationId)) === -1) {
+      throw appError_('FORBIDDEN', 'Only the receiving location can confirm receipt.');
+    }
+    updateRow_('Transfers', t.__row, { Status: 'Received', ReceivedAt: now_(), ReceivedBy: user.Email, UpdatedAt: now_(), UpdatedBy: user.Email });
+    var assets = readTableFromSheet_('Assets');
+    var a = findBy_(assets, 'AssetCode', t.AssetCode);
+    var upd = { LocationId: t.ToLocationId, UpdatedAt: now_(), UpdatedBy: user.Email };
+    if (t.ToDepartmentId) upd.DepartmentId = t.ToDepartmentId;
+    // A branch's assets carry its brand.
+    var to = findBy_(readTable_('Locations'), 'LocationId', t.ToLocationId);
+    if (to && to.Brand) upd.BrandId = to.Brand;
+    updateRow_('Assets', a.__row, upd);
+    audit_(user.Email, 'Transfers', t.TransferId, 'update', 'Status', 'Awaiting receipt', 'Received');
+    audit_(user.Email, 'Assets', t.AssetCode, 'update', 'LocationId', a.LocationId, t.ToLocationId + ' (' + t.TransferId + ')');
+    if (upd.DepartmentId && upd.DepartmentId !== a.DepartmentId) audit_(user.Email, 'Assets', t.AssetCode, 'update', 'DepartmentId', a.DepartmentId, upd.DepartmentId);
+    if (upd.BrandId && upd.BrandId !== a.BrandId) audit_(user.Email, 'Assets', t.AssetCode, 'update', 'BrandId', a.BrandId, upd.BrandId);
+    notify_(t.RequestedBy, (a.Name || t.AssetCode) + ' was received at ' + locName_(t.ToLocationId) + '.', '#/scan/' + t.AssetCode);
+    var fresh = findBy_(readTableFromSheet_('Assets'), 'AssetCode', t.AssetCode);
+    return { asset: assetView_(fresh, isFinance_(user)), context: assetContext_(user, fresh) };
+  });
+}
+
+function cancelTransfer_(user, id) {
+  return withLock_(function () {
+    var rows = readTableFromSheet_('Transfers');
+    var t = findBy_(rows, 'TransferId', String(id || '').toUpperCase());
+    if (!t || t.Status !== 'Awaiting receipt') throw appError_('NOT_FOUND', 'No transfer waiting for receipt.');
+    if (!isAdmin_(user) && t.RequestedBy !== user.Email) throw appError_('FORBIDDEN', 'Only the person who asked for it can cancel.');
+    updateRow_('Transfers', t.__row, { Status: 'Cancelled', UpdatedAt: now_(), UpdatedBy: user.Email });
+    audit_(user.Email, 'Transfers', t.TransferId, 'update', 'Status', 'Awaiting receipt', 'Cancelled');
+    var a = assetByCode_(t.AssetCode);
+    return { asset: assetView_(a, isFinance_(user)), context: assetContext_(user, a) };
+  });
+}
+
+// ----- Stock count: scan a location's assets, then report found, missing and found elsewhere
+
+function canCount_(user, locationId) {
+  if (isAdmin_(user) || user.Role === 'CountTeam') return true;
+  return user.Role === 'Manager' && myLocations_(user).indexOf(String(locationId)) !== -1;
+}
+function isTangible_(asset) {
+  var cat = findBy_(readTable_('Categories'), 'CategoryId', asset.CategoryId);
+  return !cat || cat.AssetKind !== 'Intangible';
+}
+function expectedAt_(locationId) {
+  return readTable_('Assets').filter(function (a) {
+    var parsed = parseCode_(a.AssetCode);
+    return String(a.LocationId) === String(locationId) && a.Status !== 'Disposed' &&
+      !(parsed && parsed.noLabel) && isTangible_(a);
+  });
+}
+function countView_(c, withLists) {
+  var out = { CountId: c.CountId, LocationId: c.LocationId, LocationName: locName_(c.LocationId), Status: c.Status,
+    StartedAt: c.StartedAt, StartedBy: c.StartedBy, FinishedAt: c.FinishedAt, Expected: Number(c.Expected) || 0,
+    found: splitIds_(c.Found).length, elsewhere: splitIds_(c.Elsewhere).length, unknown: splitIds_(c.Unknown).length,
+    missing: splitIds_(c.Missing).length };
+  if (withLists) {
+    var all = readTable_('Assets');
+    var describe = function (code) {
+      var a = findBy_(all, 'AssetCode', code);
+      return a ? { code: code, name: a.Name, location: locName_(a.LocationId), status: a.Status } : { code: code, name: '', location: '', status: '' };
+    };
+    out.lists = { found: splitIds_(c.Found).map(describe), elsewhere: splitIds_(c.Elsewhere).map(describe),
+      unknown: splitIds_(c.Unknown).map(function (x) { return { code: x }; }), missing: splitIds_(c.Missing).map(describe) };
+  }
+  return out;
+}
+
+function startCount_(user, locationId) {
+  var loc = findBy_(readTable_('Locations'), 'LocationId', locationId);
+  if (!loc) throw appError_('INVALID', 'Choose a location.');
+  if (!canCount_(user, locationId)) throw appError_('FORBIDDEN', 'You can count only your own locations.');
+  return withLock_(function () {
+    var rows = readTableFromSheet_('Counts');
+    var open = rows.filter(function (c) { return c.Status === 'Open' && String(c.LocationId) === String(locationId); })[0];
+    if (!open) {
+      open = { CountId: nextId_(rows, 'CountId', 'CNT'), LocationId: loc.LocationId, Status: 'Open', StartedAt: now_(),
+        StartedBy: user.Email, Expected: expectedAt_(loc.LocationId).length, Found: '', Elsewhere: '', Unknown: '', Missing: '',
+        UpdatedAt: now_(), UpdatedBy: user.Email };
+      appendRow_('Counts', open);
+      audit_(user.Email, 'Counts', open.CountId, 'create', '', '', loc.LocationId);
+    }
+    // Everything the scanner needs to answer at once, without a round trip per scan.
+    var expected = expectedAt_(loc.LocationId).map(function (a) { return { code: a.AssetCode, name: a.Name }; });
+    return { count: countView_(open, false), expected: expected, scanned: splitIds_(open.Found).concat(splitIds_(open.Elsewhere), splitIds_(open.Unknown)) };
+  });
+}
+
+function countScans_(user, id, codes, finish) {
+  if (!Array.isArray(codes) || codes.length > 500) throw appError_('INVALID', 'Send up to 500 scans at a time.');
+  return withLock_(function () {
+    var rows = readTableFromSheet_('Counts');
+    var c = findBy_(rows, 'CountId', String(id || '').toUpperCase());
+    if (!c || c.Status !== 'Open') throw appError_('NOT_FOUND', 'This count is not open.');
+    if (!canCount_(user, c.LocationId)) throw appError_('FORBIDDEN', 'You cannot count this location.');
+    var assets = readTableFromSheet_('Assets');
+    var found = c.Found, elsewhere = c.Elsewhere, unknown = c.Unknown;
+    var results = codes.map(function (raw) {
+      var parsed = parseCode_(raw);
+      // Unknown codes are kept for the report: letters, digits and dashes only, so nothing odd reaches the sheet.
+      var code = parsed ? parsed.code : String(raw || '').trim().toUpperCase().replace(/[^A-Z0-9-]/g, '').replace(/^-+/, '').slice(0, 40);
+      if (!code) return null;
+      var a = parsed ? findBy_(assets, 'AssetCode', code) : null;
+      if (a && a.Status !== 'Disposed' && String(a.LocationId) === String(c.LocationId)) { found = addCode_(found, code); return { code: code, result: 'found', name: a.Name }; }
+      if (a && a.Status !== 'Disposed') { elsewhere = addCode_(elsewhere, code); return { code: code, result: 'elsewhere', name: a.Name, location: locName_(a.LocationId) }; }
+      if (code.indexOf(',') === -1) unknown = addCode_(unknown, code);
+      return { code: code, result: 'unknown' };
+    }).filter(Boolean);
+    var upd = { Found: found, Elsewhere: elsewhere, Unknown: unknown, UpdatedAt: now_(), UpdatedBy: user.Email };
+    if (finish) {
+      var seen = splitIds_(found);
+      var expected = expectedAt_(c.LocationId);
+      upd.Missing = expected.filter(function (a) { return seen.indexOf(a.AssetCode) === -1; }).map(function (a) { return a.AssetCode; }).join(',');
+      upd.Expected = expected.length;
+      upd.Status = 'Finished'; upd.FinishedAt = now_(); upd.FinishedBy = user.Email;
+      var stamp = now_();
+      setColumns_('Assets', assets.filter(function (a) { return seen.indexOf(a.AssetCode) !== -1; }).map(function (a) { return a.__row; }),
+        { LastCountAt: stamp, LastCountBy: user.Email });
+      audit_(user.Email, 'Counts', c.CountId, 'update', 'Status', 'Open', 'Finished: ' + seen.length + ' found, ' +
+        splitIds_(upd.Missing).length + ' missing, ' + splitIds_(elsewhere).length + ' elsewhere');
+      if (splitIds_(upd.Missing).length || splitIds_(elsewhere).length) {
+        notify_(usersWithRole_(['Admin', 'Accounting']), 'Count ' + c.CountId + ' at ' + locName_(c.LocationId) + ': ' +
+          splitIds_(upd.Missing).length + ' missing, ' + splitIds_(elsewhere).length + ' found from other locations.', '#/count/' + c.CountId);
+      }
+    }
+    updateRow_('Counts', c.__row, upd);
+    var fresh = findBy_(readTableFromSheet_('Counts'), 'CountId', c.CountId);
+    return { results: results, count: countView_(fresh, finish) };
+  });
+}
+
+function cancelCount_(user, id) {
+  return withLock_(function () {
+    var rows = readTableFromSheet_('Counts');
+    var c = findBy_(rows, 'CountId', String(id || '').toUpperCase());
+    if (!c || c.Status !== 'Open') throw appError_('NOT_FOUND', 'This count is not open.');
+    if (!isAdmin_(user) && c.StartedBy !== user.Email) throw appError_('FORBIDDEN', 'Only the person who started it can cancel.');
+    updateRow_('Counts', c.__row, { Status: 'Cancelled', FinishedAt: now_(), FinishedBy: user.Email, UpdatedAt: now_(), UpdatedBy: user.Email });
+    audit_(user.Email, 'Counts', c.CountId, 'update', 'Status', 'Open', 'Cancelled');
+    return { ok: true };
+  });
+}
+
+function countDetail_(user, id) {
+  var c = findBy_(readTable_('Counts'), 'CountId', String(id || '').toUpperCase());
+  if (!c) throw appError_('NOT_FOUND', 'Count not found.');
+  if (!isFinance_(user) && !canCount_(user, c.LocationId)) throw appError_('FORBIDDEN', 'You cannot see this count.');
+  return { count: countView_(c, true), history: readTable_('Counts').filter(function (x) {
+    return String(x.LocationId) === String(c.LocationId) && x.Status === 'Finished';
+  }).slice(-10).reverse().map(function (x) { return countView_(x, false); }) };
+}
+
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
@@ -1185,7 +1829,9 @@ function validate_(def, record, rows, isNew) {
     var ids = f.type === 'ref' ? (out[f.name] ? [out[f.name]] : []) : splitIds_(out[f.name]);
     if (ids.length === 0) return;
     var refDef = SCHEMA[f.table];
-    var known = readTable_(f.table).map(function (r) { return String(r[refDef.key]); });
+    var known = readTable_(f.table).filter(function (r) {
+      return !f.refFilter || Object.keys(f.refFilter).every(function (k) { return r[k] === f.refFilter[k]; });
+    }).map(function (r) { return String(r[refDef.key]); });
     ids.forEach(function (id) {
       if (known.indexOf(id) === -1) throw appError_('INVALID', f.label + ': unknown value ' + id + '.');
     });
@@ -1353,7 +1999,7 @@ function updateRow_(name, rowIndex, obj) {
  * keeps checkboxes on real rows only and gives every record that lacks an ID
  * the next free one. Runs once, on the first request after deploy.
  */
-var DATA_FIX_VERSION = '0.2.2';
+var DATA_FIX_VERSION = '0.3.0';
 function ensureDataFixed_() {
   var props = PropertiesService.getScriptProperties();
   if (props.getProperty('DATA_FIX') === DATA_FIX_VERSION) return;
@@ -1378,11 +2024,20 @@ function migrate_() {
   readTableFromSheet_('Departments').forEach(function (d) {
     if (!d.CostAllocation) updateRow_('Departments', d.__row, { CostAllocation: 'Whole company' });
   });
-  ['Locations', 'Departments', 'Assets'].concat(fresh).forEach(function (name) {
-    var sh = ss.getSheetByName(name);
-    if (sh) formatSheet_(sh, name);
+  var settings = readTableFromSheet_('Settings');
+  DEFAULT_SETTINGS.forEach(function (d) {
+    if (!settings.some(function (r) { return r.Key === d[0]; })) {
+      appendRow_('Settings', { Key: d[0], Value: d[1], Description: d[2], UpdatedAt: now_(), UpdatedBy: 'setup' });
+    }
   });
-  if (fresh.length) formatBook_(ss);
+  // Only new sheets get the full look; existing ones keep theirs (formatting all takes too long).
+  fresh.forEach(function (name) {
+    var sh = ss.getSheetByName(name);
+    if (!sh) return;
+    formatSheet_(sh, name);
+    var pos = SHEET_ORDER.indexOf(name);
+    if (pos !== -1) { ss.setActiveSheet(sh); ss.moveActiveSheet(Math.min(pos + 1, ss.getSheets().length)); }
+  });
 }
 
 function repairSheets_() {
@@ -1433,6 +2088,23 @@ function repairSheets_() {
   });
   if (report.length) console.log('Repaired IDs: ' + report.join('; '));
   return report;
+}
+
+/** Writes the same values into some columns of many rows with one read and one write per column. */
+function setColumns_(name, rowNumbers, values) {
+  if (!rowNumbers.length) return;
+  var sh = sheet_(name);
+  var headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var first = Math.min.apply(null, rowNumbers), last = Math.max.apply(null, rowNumbers);
+  Object.keys(values).forEach(function (k) {
+    var col = headers.indexOf(k) + 1;
+    if (!col) return;
+    var range = sh.getRange(first, col, last - first + 1, 1);
+    var cur = range.getValues();
+    rowNumbers.forEach(function (r) { cur[r - first][0] = values[k]; });
+    range.setValues(cur);
+  });
+  invalidate_(name);
 }
 
 function audit_(userEmail, table, id, action, field, oldV, newV) {
