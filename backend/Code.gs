@@ -1656,14 +1656,17 @@ function receiveTransfer_(user, id, code) {
     var a = findBy_(assets, 'AssetCode', t.AssetCode);
     var upd = { LocationId: t.ToLocationId, UpdatedAt: now_(), UpdatedBy: user.Email };
     if (t.ToDepartmentId) upd.DepartmentId = t.ToDepartmentId;
-    // A branch's assets carry its brand.
+    // The asset takes the new location's brand, or none where the location has none (central kitchen, office).
     var to = findBy_(readTable_('Locations'), 'LocationId', t.ToLocationId);
-    if (to && to.Brand) upd.BrandId = to.Brand;
+    upd.BrandId = to && to.Brand ? String(to.Brand) : '';
+    // Depreciation follows the new location: an exception set for the old place no longer applies.
+    if (a.CostCenters) upd.CostCenters = '';
     updateRow_('Assets', a.__row, upd);
+    if (a.CostCenters) audit_(user.Email, 'Assets', t.AssetCode, 'update', 'CostCenters', a.CostCenters, '(cleared on transfer ' + t.TransferId + ')');
     audit_(user.Email, 'Transfers', t.TransferId, 'update', 'Status', 'Awaiting receipt', 'Received');
     audit_(user.Email, 'Assets', t.AssetCode, 'update', 'LocationId', a.LocationId, t.ToLocationId + ' (' + t.TransferId + ')');
     if (upd.DepartmentId && upd.DepartmentId !== a.DepartmentId) audit_(user.Email, 'Assets', t.AssetCode, 'update', 'DepartmentId', a.DepartmentId, upd.DepartmentId);
-    if (upd.BrandId && upd.BrandId !== a.BrandId) audit_(user.Email, 'Assets', t.AssetCode, 'update', 'BrandId', a.BrandId, upd.BrandId);
+    if (upd.BrandId !== String(a.BrandId || '')) audit_(user.Email, 'Assets', t.AssetCode, 'update', 'BrandId', a.BrandId, upd.BrandId);
     notify_(t.RequestedBy, (a.Name || t.AssetCode) + ' was received at ' + locName_(t.ToLocationId) + '.', '#/scan/' + t.AssetCode);
     var fresh = findBy_(readTableFromSheet_('Assets'), 'AssetCode', t.AssetCode);
     return { asset: assetView_(fresh, isFinance_(user)), context: assetContext_(user, fresh) };

@@ -105,6 +105,8 @@ test('transfer: custody moves only when the receiving location scans the asset',
   assert.strictEqual(rima('requestTransfer', { code: 'FL-000002', toLocationId: L1 }).error.code, 'INVALID');
   // Sam cannot see the asset before it is sent to him.
   assert.strictEqual(ok(sam('lookup', { code: 'FL-000002' })).status, 'elsewhere');
+  // Give the asset a brand and a cost-centre exception first: both must change with the move.
+  env.ctx.updateRow_('Assets', env.ctx.readTableFromSheet_('Assets').find((a) => a.AssetCode === 'FL-000002').__row, { BrandId: 'BRD-001', CostCenters: 'CC-006' });
   TR = ok(rima('requestTransfer', { code: 'FL-000002', toLocationId: L2, reason: 'Needed in the kitchen' })).transfer.TransferId;
   assert.strictEqual(rima('requestTransfer', { code: 'FL-000002', toLocationId: L2 }).error.code, 'INVALID');
   assert.strictEqual(ok(sam('notices')).unread, 1);
@@ -117,7 +119,10 @@ test('transfer: custody moves only when the receiving location scans the asset',
   assert.strictEqual(sam('receiveTransfer', { id: TR, code: 'FL-000001' }).error.code, 'INVALID');
   const got = ok(sam('receiveTransfer', { id: TR, code: 'fl-000002' }));
   assert.strictEqual(got.asset.LocationId, L2);
-  assert.strictEqual(got.asset.BrandId, '', 'central kitchen has no brand: brand kept as it was');
+  assert.strictEqual(got.asset.BrandId, '', 'central kitchen has no brand, so the asset has none');
+  const moved = env.ctx.readTableFromSheet_('Assets').find((a) => a.AssetCode === 'FL-000002');
+  assert.strictEqual(moved.CostCenters, '', 'depreciation now follows the new location');
+  assert.strictEqual(moved.BrandId, '');
   assert.strictEqual(ok(rima('lookup', { code: 'FL-000002' })).status, 'elsewhere');
   assert(ok(rima('notices')).items[0].text.indexOf('received') !== -1);
 });
