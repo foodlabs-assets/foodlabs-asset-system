@@ -19,6 +19,7 @@ function makeEnv() {
   const cache = {};
   let tokenInfo = {};
   let fetchCalls = 0;
+  const mails = [];
 
   function makeSheet(name) {
     const data = [];
@@ -120,6 +121,7 @@ function makeEnv() {
       base64Encode: (bytes) => Buffer.from(bytes).toString('base64'),
       newBlob: (bytes, type, name) => ({ getBytes: () => bytes, getContentType: () => type, getName: () => name })
     },
+    MailApp: { sendEmail: (o) => { mails.push(o); } },
     LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock() {} }) },
     DriveApp: (() => {
       const files = {};
@@ -153,7 +155,7 @@ function makeEnv() {
     const res = ctx.doPost({ postData: { contents: JSON.stringify({ token, action, payload }) } });
     return JSON.parse(res.body);
   }
-  return { ctx, sheets, props, cache, addToken, call, fetchCount: () => fetchCalls };
+  return { ctx, sheets, props, cache, addToken, call, mails, fetchCount: () => fetchCalls };
 }
 
 module.exports = { makeEnv };

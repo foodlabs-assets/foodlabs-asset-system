@@ -241,7 +241,7 @@
 
   // ---------------------------------------------------------------- admin
   function tableOrder() {
-    var order = ['Users', 'Locations', 'Departments', 'Brands', 'CostCenters', 'Categories', 'Types', 'Makes', 'LabelTemplates', 'XeroBalances', 'Settings'];
+    var order = ['Users', 'Locations', 'Departments', 'Brands', 'CostCenters', 'Categories', 'Types', 'Makes', 'LabelTemplates', 'XeroBalances', 'Settings', 'NotificationTypes'];
     return order.filter(function (t) { return state.meta.tables[t]; });
   }
 
@@ -261,7 +261,7 @@
       });
     }));
     var search = h('input', { class: 'search', type: 'search', placeholder: 'Search', 'aria-label': 'Search' });
-    var addBtn = tableName === 'Settings' ? null :
+    var addBtn = tableName === 'Settings' || def.noAdd ? null :
       h('button', { class: 'btn primary', text: 'Add', onclick: function () { openForm(tableName, null); } });
     var refreshBtn = h('button', { class: 'btn', text: 'Refresh', title: 'Reload from the server' });
     var listBox = h('div', null, h('div', { class: 'boot', style: 'min-height:160px' }, h('div', { class: 'spinner' })));
@@ -470,7 +470,7 @@
   }
 
   function singular(title) {
-    var map = { Users: 'user', Locations: 'location', Departments: 'department', Brands: 'brand', 'Cost centres': 'cost centre', Categories: 'category', 'Asset types': 'asset type', Settings: 'setting', Makes: 'make', 'Label sizes': 'label size', 'Xero balances': 'Xero balance' };
+    var map = { Users: 'user', Locations: 'location', Departments: 'department', Brands: 'brand', 'Cost centres': 'cost centre', Categories: 'category', 'Asset types': 'asset type', Settings: 'setting', Makes: 'make', 'Label sizes': 'label size', 'Xero balances': 'Xero balance', 'E-mail alerts': 'e-mail alert' };
     return map[title] || title.toLowerCase();
   }
 

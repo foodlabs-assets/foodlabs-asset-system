@@ -172,6 +172,11 @@ try:
         adm.goto('http://localhost:%s/index.html#/scan/FL-000001' % PORT_S)
         adm.wait_for_selector('text=Maintenance history · total 35.250')
         adm.screenshot(path=f'{SHOTS}/p3-10-admin-asset.png', full_page=True)
+        # E-mail alerts: a fixed list with an e-mail switch, no Add button
+        adm.goto('http://localhost:%s/index.html#/admin/NotificationTypes' % PORT_S)
+        adm.wait_for_selector('table.datatable >> text=MaintenanceNew')
+        assert not adm.is_visible('.toolbar >> text=Add')
+        adm.screenshot(path=f'{SHOTS}/p3-11-email-alerts.png', full_page=True)
         # Users form has the backup switch for area and operations managers
         adm.goto('http://localhost:%s/index.html#/admin/Users' % PORT_S)
         adm.click('table.datatable >> text=rima@foodlabs.com.kw')

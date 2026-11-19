@@ -185,6 +185,23 @@ test('a missing asset comes back when scanned in a later count, or when its loca
   assert.strictEqual(sam('markFound', { code: 'FL-000003' }).error.code, 'INVALID');
 });
 
+test('important alerts also go by e-mail; admin switches them in E-mail alerts', () => {
+  const sent = (to, re) => env.mails.filter((m) => m.to === to && re.test(m.subject)).length;
+  assert(sent(tokens.ali, /New maintenance request MR-001/) === 1, 'new request e-mailed to the technician');
+  assert.strictEqual(sent(tokens.acc, /Work done/), 0, 'work done stays on the bell');
+  assert(sent(tokens.sam, /on its way/) >= 1, 'transfer e-mailed to the receiving manager');
+  assert(env.mails.every((m) => /foodlabs-assets\.github\.io/.test(m.body)), 'every mail links to the app');
+  // Admin switches work-done e-mails on; nobody can add alert types.
+  ok(admin('save', { table: 'NotificationTypes', record: { Event: 'MaintenanceWorkDone', Email: true } }));
+  assert.strictEqual(admin('save', { table: 'NotificationTypes', isNew: true, record: { Event: 'X', Email: true } }).error.code, 'INVALID');
+  const r = ok(rima('requestMaintenance', { code: 'FL-000001', request: { Type: 'Other', Description: 'Light out' } })).request;
+  ok(ali('updateMaintenance', { id: r.RequestId, step: 'workDone', values: { WorkNotes: 'New bulb', Outcome: 'Repaired' } }));
+  assert.strictEqual(sent(tokens.acc, new RegExp('Work done on ' + r.RequestId)), 1);
+  // A mail failure never blocks the action.
+  env.ctx.MailApp.sendEmail = () => { throw new Error('quota'); };
+  ok(sam('requestMaintenance', { code: 'FL-000003', request: { Type: 'Other', Description: 'Door' } }));
+});
+
 test('notifications can be marked read', () => {
   const before = ok(sam('notices'));
   assert(before.unread >= 1);

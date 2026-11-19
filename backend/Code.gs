@@ -208,6 +208,14 @@ var SCHEMA = {
       { name: 'MatchStatus' }, { name: 'MatchedAssets' }, { name: 'MatchNote' }
     ]
   },
+  NotificationTypes: {
+    title: 'E-mail alerts', key: 'Event', admin: true, noAdd: true,
+    fields: [
+      { name: 'Event', label: 'Alert', type: 'text', keyField: true, readOnly: true },
+      { name: 'Description', label: 'When and to whom', type: 'text', readOnly: true },
+      { name: 'Email', label: 'Also send by e-mail', type: 'bool' }
+    ]
+  },
   Maintenance: {
     title: 'Maintenance requests', key: 'RequestId', prefix: 'MR',
     fields: [
@@ -296,6 +304,7 @@ var DEFAULT_SETTINGS = [
   ['WarrantyAlertDays', '', 'Days before warranty end to send an alert'],
   ['CountTeamOpen', 'FALSE', 'TRUE while the count team may register assets on blank labels'],
   ['PhotoFolderId', '', 'Drive folder for asset photos (filled automatically)'],
+  ['AppUrl', 'https://foodlabs-assets.github.io/foodlabs-asset-system/', 'Link to the app used in e-mails'],
   ['MaintenanceTypes', 'Breakdown, Preventive, Other', 'Choices for the type of a maintenance request, separated by commas']
 ];
 
@@ -305,6 +314,19 @@ var SEED_COST_CENTERS = [
   "Philly's - Yarmouk", "Philly's - Salwa", "Philly's - The Lake", "Philly's - Hawally",
   "Smashy's - Yarmouk", 'Juiced - CK', 'Juiced - Coop - CK', 'Juiced - b2b - CK',
   'Tiramisu Creamery - CK', 'Bakery - CK'
+];
+
+/** Every alert shows on the in-app bell; the important ones also go by e-mail (editable in admin). */
+var SEED_NOTIFICATION_TYPES = [
+  ['MaintenanceNew', 'New maintenance request: to the technician, or to the area and operations managers when there is none', true],
+  ['MaintenanceAssigned', 'Request passed to another technician: to that technician', true],
+  ['MaintenanceWorkDone', 'Work done, waiting for the invoice: to accounting and the requester', false],
+  ['MaintenanceClosed', 'Request closed: to the requester', false],
+  ['MaintenanceCancelled', 'Request cancelled: to the technician', false],
+  ['TransferSent', 'Asset on its way, waiting for receipt: to the receiving location and admin', true],
+  ['TransferReceived', 'Asset received: to whoever asked for the transfer', false],
+  ['CountGaps', 'Count finished with missing assets or assets from other locations: to admin and accounting', true],
+  ['MissingFound', 'A missing asset was found again: to admin and accounting', false]
 ];
 
 var SEED_LABEL_TEMPLATES = [['50 x 25 mm', 50, 25], ['60 x 40 mm', 60, 40]];
@@ -358,6 +380,7 @@ function setup() {
   }
 
   seedCostCenters_();
+  seedNotificationTypes_();
 
   if (readTable_('Categories').length === 0) {
     SEED_CATEGORIES.forEach(function (c, i) {
@@ -372,6 +395,14 @@ function setup() {
   PropertiesService.getScriptProperties().setProperty('DATA_FIX', DATA_FIX_VERSION);
   formatBook_(ss);
   return 'Setup done. Data sheet: ' + ss.getUrl() + ' · Bootstrap admin: ' + props.getProperty('BOOTSTRAP_ADMIN');
+}
+
+function seedNotificationTypes_() {
+  var rows = readTableFromSheet_('NotificationTypes');
+  SEED_NOTIFICATION_TYPES.forEach(function (t) {
+    if (findBy_(rows, 'Event', t[0])) return;
+    appendRow_('NotificationTypes', { Event: t[0], Description: t[1], Email: t[2], UpdatedAt: now_(), UpdatedBy: 'setup' });
+  });
 }
 
 function seedCostCenters_() {
@@ -412,6 +443,13 @@ function ensureSheet_(ss, name) {
   return sh;
 }
 
+/** Run once from the editor after the e-mail alerts arrive: it asks for the mail permission and sends you a test. */
+function testEmail() {
+  var me = Session.getEffectiveUser().getEmail();
+  MailApp.sendEmail(me, 'Foodlabs Assets: test e-mail', 'E-mail alerts from the Foodlabs asset system work.');
+  return 'Test e-mail sent to ' + me;
+}
+
 /** Run from the editor to re-apply the look of the data sheet without touching data. */
 function formatSheets() {
   formatBook_(book_());
@@ -419,7 +457,7 @@ function formatSheets() {
 }
 
 var SHEET_ORDER = ['Assets', 'Maintenance', 'Transfers', 'Counts', 'LegacyLines', 'LabelBatches', 'Users', 'Locations', 'Departments', 'Brands', 'CostCenters',
-  'Categories', 'Types', 'Makes', 'LabelTemplates', 'XeroBalances', 'Settings', 'Notifications', 'AuditLog'];
+  'Categories', 'Types', 'Makes', 'LabelTemplates', 'XeroBalances', 'Settings', 'NotificationTypes', 'Notifications', 'AuditLog'];
 var BRAND_GREEN = '#0f5e4b';
 
 function formatBook_(ss) {
@@ -652,7 +690,7 @@ function meta_(user) {
     Object.keys(SCHEMA).forEach(function (name) {
       var def = SCHEMA[name];
       if (!def.admin) return;
-      tables[name] = { title: def.title, key: def.key, prefix: def.prefix || '', fields: def.fields };
+      tables[name] = { title: def.title, key: def.key, prefix: def.prefix || '', fields: def.fields, noAdd: !!def.noAdd };
     });
   }
   return { user: publicUser_(user), tables: tables, roles: ROLES, version: APP_VERSION };
@@ -747,7 +785,7 @@ function saveRecord_(user, table, record, isNew) {
   requireAdmin_(user);
   var def = adminDef_(table);
   if (!record || typeof record !== 'object') throw appError_('INVALID', 'Nothing to save.');
-  if (table === 'Settings' && isNew) throw appError_('INVALID', 'Settings cannot be added from the app.');
+  if ((table === 'Settings' || def.noAdd) && isNew) throw appError_('INVALID', 'This list cannot be added to from the app.');
 
   return withLock_(function () {
     var rows = readTableFromSheet_(table); // fresh read inside the lock, never the cache
@@ -1296,8 +1334,9 @@ function addCode_(list, code) {
 
 // ----- Notifications (in-app bell; e-mail comes with the scheduled jobs)
 
-function notify_(emails, text, link) {
+function notify_(emails, text, link, event) {
   var seen = {};
+  var mail = event ? emailOn_(event) : false;
   (Array.isArray(emails) ? emails : [emails]).forEach(function (e) {
     e = String(e || '').toLowerCase();
     if (!e || seen[e]) return;
@@ -1305,7 +1344,32 @@ function notify_(emails, text, link) {
     var rows = readTableFromSheet_('Notifications');
     appendRow_('Notifications', { NoticeId: nextId_(rows, 'NoticeId', 'N'), User: e, Text: String(text).slice(0, 300),
       Link: link || '', CreatedAt: now_(), ReadAt: '' });
+    if (mail) sendMail_(e, text, link);
   });
+}
+function emailOn_(event) {
+  var row = findBy_(readTable_('NotificationTypes'), 'Event', event);
+  return !!row && truthy_(row.Email);
+}
+/** E-mail for the alerts switched on in admin. A failure (quota, permission) never stops the action itself. */
+function sendMail_(to, text, link) {
+  try {
+    var url = String(setting_('AppUrl') || 'https://foodlabs-assets.github.io/foodlabs-asset-system/') + (link || '');
+    MailApp.sendEmail({
+      to: to,
+      subject: 'Foodlabs Assets: ' + String(text).slice(0, 90),
+      body: text + '\n\nOpen in the app: ' + url + '\n\nThis is an automatic message from the Foodlabs asset system.',
+      htmlBody: '<p style="font-family:Arial,sans-serif;font-size:14px">' + htmlEsc_(text) + '</p>' +
+        '<p><a href="' + htmlEsc_(url) + '" style="background:#0f5e4b;color:#fff;padding:9px 16px;border-radius:6px;text-decoration:none;font-family:Arial,sans-serif;font-size:14px">Open in the app</a></p>' +
+        '<p style="font-family:Arial,sans-serif;font-size:12px;color:#777">Automatic message from the Foodlabs asset system.</p>',
+      name: 'Foodlabs Assets'
+    });
+  } catch (err) {
+    console.error('Mail to ' + to + ' failed: ' + (err && err.message || err));
+  }
+}
+function htmlEsc_(s) {
+  return String(s === undefined || s === null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; });
 }
 function usersWithRole_(roles) {
   return readTable_('Users').filter(function (u) { return roles.indexOf(u.Role) !== -1 && truthy_(u.Active); })
@@ -1497,10 +1561,10 @@ function requestMaintenance_(user, code, input, photos) {
     setAssetStatus_(user, asset.AssetCode, 'In maintenance', id);
     var link = '#/maintenance/' + id;
     var what = id + ': ' + asset.Name + ' at ' + locName_(asset.LocationId) + (priority === 'Urgent' ? ' (urgent)' : '');
-    if (tech) notify_(tech, 'New maintenance request ' + what, link);
+    if (tech) notify_(tech, 'New maintenance request ' + what, link, 'MaintenanceNew');
     else {
       var backups = maintenanceBackups_();
-      notify_(backups.length ? backups : usersWithRole_(['Admin']), 'New maintenance request ' + what + ' (no technician): please arrange it.', link);
+      notify_(backups.length ? backups : usersWithRole_(['Admin']), 'New maintenance request ' + what + ' (no technician): please arrange it.', link, 'MaintenanceNew');
     }
     return { request: maintenanceView_(rec, isFinance_(user)) };
   });
@@ -1588,12 +1652,12 @@ function updateMaintenance_(user, id, step, values, files) {
       });
       if (!stillOpen) setAssetStatus_(user, r.AssetCode, 'Active', r.RequestId);
     }
-    if (step === 'assign') notify_(upd.Technician, 'Maintenance request ' + label + ' was assigned to you.', link);
+    if (step === 'assign') notify_(upd.Technician, 'Maintenance request ' + label + ' was assigned to you.', link, 'MaintenanceAssigned');
     if (step === 'workDone') {
-      notify_(usersWithRole_(['Accounting']).concat([r.RequestedBy]), 'Work done on ' + label + ': ' + upd.Outcome + '. Waiting for the invoice.', link);
+      notify_(usersWithRole_(['Accounting']).concat([r.RequestedBy]), 'Work done on ' + label + ': ' + upd.Outcome + '. Waiting for the invoice.', link, 'MaintenanceWorkDone');
     }
-    if (step === 'close') notify_(r.RequestedBy, 'Maintenance request ' + label + ' is closed.', link);
-    if (step === 'cancel' && r.Technician) notify_(r.Technician, 'Maintenance request ' + label + ' was cancelled.', link);
+    if (step === 'close') notify_(r.RequestedBy, 'Maintenance request ' + label + ' is closed.', link, 'MaintenanceClosed');
+    if (step === 'cancel' && r.Technician) notify_(r.Technician, 'Maintenance request ' + label + ' was cancelled.', link, 'MaintenanceCancelled');
     var fresh = findBy_(readTableFromSheet_('Maintenance'), 'RequestId', r.RequestId);
     return { request: maintenanceView_(fresh, isFinance_(user)), can: maintenanceCan_(user, fresh) };
   });
@@ -1648,7 +1712,7 @@ function requestTransfer_(user, code, toLocationId, toDepartmentId, reason) {
     appendRow_('Transfers', rec);
     audit_(user.Email, 'Transfers', id, 'create', '', '', asset.AssetCode + ' ' + asset.LocationId + ' -> ' + to.LocationId);
     notify_(managersOf_(to.LocationId).concat(usersWithRole_(['Admin'])),
-      asset.Name + ' (' + asset.AssetCode + ') is on its way to ' + locName_(to.LocationId) + '. Scan it when it arrives.', '#/scan/' + asset.AssetCode);
+      asset.Name + ' (' + asset.AssetCode + ') is on its way to ' + locName_(to.LocationId) + '. Scan it when it arrives.', '#/scan/' + asset.AssetCode, 'TransferSent');
     return { transfer: transferView_(rec) };
   });
 }
@@ -1678,7 +1742,7 @@ function receiveTransfer_(user, id, code) {
     audit_(user.Email, 'Assets', t.AssetCode, 'update', 'LocationId', a.LocationId, t.ToLocationId + ' (' + t.TransferId + ')');
     if (upd.DepartmentId && upd.DepartmentId !== a.DepartmentId) audit_(user.Email, 'Assets', t.AssetCode, 'update', 'DepartmentId', a.DepartmentId, upd.DepartmentId);
     if (upd.BrandId !== String(a.BrandId || '')) audit_(user.Email, 'Assets', t.AssetCode, 'update', 'BrandId', a.BrandId, upd.BrandId);
-    notify_(t.RequestedBy, (a.Name || t.AssetCode) + ' was received at ' + locName_(t.ToLocationId) + '.', '#/scan/' + t.AssetCode);
+    notify_(t.RequestedBy, (a.Name || t.AssetCode) + ' was received at ' + locName_(t.ToLocationId) + '.', '#/scan/' + t.AssetCode, 'TransferReceived');
     var fresh = findBy_(readTableFromSheet_('Assets'), 'AssetCode', t.AssetCode);
     return { asset: assetView_(fresh, isFinance_(user)), context: assetContext_(user, fresh) };
   });
@@ -1780,7 +1844,7 @@ function countScans_(user, id, codes, finish) {
       audit_(user.Email, 'Assets', a.AssetCode, 'update', 'Status', 'Missing', 'Active (found in ' + c.CountId + ')');
     });
     if (back.length) notify_(usersWithRole_(['Admin', 'Accounting']), back.length + ' missing asset(s) found again in count ' + c.CountId + ': ' +
-      back.map(function (a) { return a.AssetCode; }).join(', ') + '.', '#/count/' + c.CountId);
+      back.map(function (a) { return a.AssetCode; }).join(', ') + '.', '#/count/' + c.CountId, 'MissingFound');
     var upd = { Found: found, Elsewhere: elsewhere, Unknown: unknown, UpdatedAt: now_(), UpdatedBy: user.Email };
     if (finish) {
       var seen = splitIds_(found);
@@ -1802,7 +1866,7 @@ function countScans_(user, id, codes, finish) {
         splitIds_(upd.Missing).length + ' missing, ' + splitIds_(elsewhere).length + ' elsewhere');
       if (splitIds_(upd.Missing).length || splitIds_(elsewhere).length) {
         notify_(usersWithRole_(['Admin', 'Accounting']), 'Count ' + c.CountId + ' at ' + locName_(c.LocationId) + ': ' +
-          splitIds_(upd.Missing).length + ' missing, ' + splitIds_(elsewhere).length + ' found from other locations.', '#/count/' + c.CountId);
+          splitIds_(upd.Missing).length + ' missing, ' + splitIds_(elsewhere).length + ' found from other locations.', '#/count/' + c.CountId, 'CountGaps');
       }
     }
     updateRow_('Counts', c.__row, upd);
@@ -1821,7 +1885,7 @@ function markFound_(user, code) {
     if (!canActOnAsset_(user, a) && user.Role !== 'CountTeam') throw appError_('FORBIDDEN', 'Only its location or admin can mark it found.');
     updateRow_('Assets', a.__row, { Status: 'Active', MissingSince: '', MissingCount: '', UpdatedAt: now_(), UpdatedBy: user.Email });
     audit_(user.Email, 'Assets', a.AssetCode, 'update', 'Status', 'Missing', 'Active (marked found)');
-    notify_(usersWithRole_(['Admin', 'Accounting']), (a.Name || a.AssetCode) + ' (' + a.AssetCode + ') was found at ' + locName_(a.LocationId) + '.', '#/scan/' + a.AssetCode);
+    notify_(usersWithRole_(['Admin', 'Accounting']), (a.Name || a.AssetCode) + ' (' + a.AssetCode + ') was found at ' + locName_(a.LocationId) + '.', '#/scan/' + a.AssetCode, 'MissingFound');
     var fresh = findBy_(readTableFromSheet_('Assets'), 'AssetCode', a.AssetCode);
     return { asset: assetView_(fresh, isFinance_(user)), context: assetContext_(user, fresh) };
   });
@@ -2075,6 +2139,7 @@ function migrate_() {
   });
   repairSheets_();
   seedCostCenters_();
+  seedNotificationTypes_();
   // Departments added before 0.2.2 have no rule yet: whole company.
   readTableFromSheet_('Departments').forEach(function (d) {
     if (!d.CostAllocation) updateRow_('Departments', d.__row, { CostAllocation: 'Whole company' });

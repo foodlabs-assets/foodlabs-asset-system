@@ -11,11 +11,11 @@ test('setup creates sheets, settings and seed categories', () => {
   ['Users', 'Locations', 'Departments', 'Brands', 'Categories', 'Types', 'Settings', 'AuditLog']
     .forEach((n) => assert(env.sheets[n], 'missing ' + n));
   assert.strictEqual(env.sheets.Categories.data.length, 8);
-  assert.strictEqual(env.sheets.Settings.data.length, 8);
+  assert.strictEqual(env.sheets.Settings.data.length, 9);
   assert.strictEqual(env.props.BOOTSTRAP_ADMIN, 'osama@foodlabs.com.kw');
   env.ctx.setup(); // idempotent
   assert.strictEqual(env.sheets.Categories.data.length, 8);
-  assert.strictEqual(env.sheets.Settings.data.length, 8);
+  assert.strictEqual(env.sheets.Settings.data.length, 9);
 });
 
 env.addToken('t-osama', 'Osama@foodlabs.com.kw');
@@ -54,7 +54,7 @@ test('token verification is cached', () => {
 test('meta exposes admin tables to admin', () => {
   const r = env.call('t-osama', 'meta');
   assert.deepStrictEqual(Object.keys(r.data.tables).sort(),
-    ['Brands', 'Categories', 'CostCenters', 'Departments', 'LabelTemplates', 'Locations', 'Makes', 'Settings', 'Types', 'Users', 'XeroBalances']);
+    ['Brands', 'Categories', 'CostCenters', 'Departments', 'LabelTemplates', 'Locations', 'Makes', 'NotificationTypes', 'Settings', 'Types', 'Users', 'XeroBalances']);
 });
 
 test('creating locations gives sequential IDs and audit rows', () => {
@@ -151,7 +151,7 @@ test('bootstrap returns meta and every admin table in one call', () => {
   assert.strictEqual(r.data.data.Locations.length, 2);
   assert.strictEqual(r.data.data.Categories.length, 7);
   assert(!('AuditLog' in r.data.data));
-  assert.deepStrictEqual(Object.keys(env.call('t-acc', 'bootstrap').data.data).length, 11);
+  assert.deepStrictEqual(Object.keys(env.call('t-acc', 'bootstrap').data.data).length, 12);
 });
 
 test('table reads come from cache and writes invalidate it', () => {
