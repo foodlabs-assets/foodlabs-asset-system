@@ -210,7 +210,7 @@
 
   // ---------------------------------------------------------------- admin
   function tableOrder() {
-    var order = ['Users', 'Locations', 'Departments', 'Brands', 'Categories', 'Types', 'Makes', 'LabelTemplates', 'XeroBalances', 'Settings'];
+    var order = ['Users', 'Locations', 'Departments', 'Brands', 'CostCenters', 'Categories', 'Types', 'Makes', 'LabelTemplates', 'XeroBalances', 'Settings'];
     return order.filter(function (t) { return state.meta.tables[t]; });
   }
 
@@ -263,8 +263,17 @@
   function refName(table, id) {
     var def = state.meta.tables[table];
     var rows = state.cache[table] || [];
-    for (var i = 0; i < rows.length; i++) if (String(rows[i][def.key]) === String(id)) return rows[i].Name || id;
+    for (var i = 0; i < rows.length; i++) if (String(rows[i][def.key]) === String(id)) return rowLabel(table, rows[i]) || id;
+    if (state.lists && state.lists[table]) { var n = listName(table, id); if (n) return n; }
     return id;
+  }
+  // Locations show their brand in front ("Philly's - Yarmouk"): two brands can share a place name.
+  function rowLabel(table, row) {
+    if (table !== 'Locations' || !row.Brand) return row.Name;
+    var b = '';
+    (state.cache.Brands || []).forEach(function (r) { if (String(r.BrandId) === String(row.Brand)) b = r.Name; });
+    if (!b) b = listName('Brands', row.Brand);
+    return b && b !== row.Brand ? b + ' - ' + row.Name : row.Name;
   }
 
   function display(f, v) {
@@ -305,6 +314,7 @@
     var def = state.meta.tables[tableName];
     var isNew = !row;
     var inputs = {};
+    var fieldEls = {};
     var errBox = h('div');
     var body = h('div', { class: 'body' }, errBox);
 
@@ -327,7 +337,7 @@
         sel.appendChild(h('option', { value: '', text: '—' }));
         var opts = f.type === 'select' ? f.options.map(function (o) { return [o, o]; }) :
           (state.cache[f.table] || []).filter(function (r) { return isTrue(r.Active) || String(r[state.meta.tables[f.table].key]) === String(val); })
-            .map(function (r) { return [r[state.meta.tables[f.table].key], r.Name]; });
+            .map(function (r) { return [r[state.meta.tables[f.table].key], rowLabel(f.table, r)]; });
         opts.forEach(function (o) {
           if (tableName === 'Users' && f.name === 'Role' && o[0] === 'Admin' && state.user.role !== 'Admin' && val !== 'Admin') return;
           var opt = h('option', { value: o[0], text: o[1] });
@@ -347,7 +357,7 @@
           var c = h('input', { type: 'checkbox', value: id });
           c.checked = chosen.indexOf(id) !== -1;
           boxes.push(c);
-          list.appendChild(h('label', null, c, r.Name));
+          list.appendChild(h('label', null, c, rowLabel(f.table, r)));
         });
         if (!boxes.length) list.appendChild(h('div', { class: 'muted', text: 'Add ' + state.meta.tables[f.table].title.toLowerCase() + ' first.' }));
         inputs[f.name] = function () { return boxes.filter(function (b) { return b.checked; }).map(function (b) { return b.value; }); };
@@ -359,8 +369,17 @@
         inputs[f.name] = function () { return inp.value; };
         field.appendChild(label); field.appendChild(inp);
       }
+      if (f.help) field.appendChild(h('div', { class: 'muted small', text: f.help }));
+      fieldEls[f.name] = field;
       body.appendChild(field);
     });
+    // Departments: the cost centre list only matters for "Selected cost centres".
+    if (fieldEls.CostAllocation && fieldEls.CostCenters) {
+      var allocSel = fieldEls.CostAllocation.querySelector('select');
+      var syncAlloc = function () { fieldEls.CostCenters.style.display = allocSel.value === 'Selected cost centres' ? '' : 'none'; };
+      allocSel.addEventListener('change', syncAlloc);
+      syncAlloc();
+    }
 
     if (!isNew) {
       var histBtn = h('button', { class: 'btn', text: 'Show change history' });
@@ -419,7 +438,7 @@
   }
 
   function singular(title) {
-    var map = { Users: 'user', Locations: 'location', Departments: 'department', Brands: 'brand', Categories: 'category', 'Asset types': 'asset type', Settings: 'setting', Makes: 'make', 'Label sizes': 'label size', 'Xero balances': 'Xero balance' };
+    var map = { Users: 'user', Locations: 'location', Departments: 'department', Brands: 'brand', 'Cost centres': 'cost centre', Categories: 'category', 'Asset types': 'asset type', Settings: 'setting', Makes: 'make', 'Label sizes': 'label size', 'Xero balances': 'Xero balance' };
     return map[title] || title.toLowerCase();
   }
 
@@ -589,7 +608,8 @@
     if (state.user.isFinance) rows = rows.concat([
       ['Cost', money(a.Cost)], ['Accumulated depreciation 31 Dec 2026', money(a.OpeningAccumDepr)],
       ['Useful life (months)', a.LifeMonths], ['Remaining months at 1 Jan 2027', a.RemainingMonths],
-      ['Purchase date', a.PurchaseDate], ['Old register line', a.LegacyLineIds]
+      ['Purchase date', a.PurchaseDate], ['Old register line', a.LegacyLineIds],
+      ['Depreciation goes to', costCentreText(a)]
     ]);
     var photos = h('div', { class: 'photos' });
     (a.Photos || []).forEach(function (id) {
@@ -610,6 +630,20 @@
         return [h('dt', { text: r[0] }), h('dd', { text: String(r[1]) })];
       })),
       (a.Photos || []).length ? photos : null);
+  }
+
+  /** Mirrors costCentersFor_ in the backend: asset exception, then location, then department. */
+  function costCentreText(a) {
+    var L = state.lists || {};
+    var names = function (ids) { return ids.map(function (id) { return listName('CostCenters', id); }).join(', ') + (ids.length > 1 ? ' (split by sales)' : ''); };
+    var own = String(a.CostCenters || '').split(',').map(function (x) { return x.trim(); }).filter(String);
+    if (own.length) return names(own) + ' · exception';
+    var loc = (L.Locations || []).filter(function (l) { return l.id === String(a.LocationId); })[0];
+    if (loc && loc.CostCenterId) return names([String(loc.CostCenterId)]);
+    var dep = (L.Departments || []).filter(function (d) { return d.id === String(a.DepartmentId); })[0];
+    var depIds = dep ? String(dep.CostCenters || '').split(',').map(function (x) { return x.trim(); }).filter(String) : [];
+    if (dep && dep.CostAllocation === 'Selected cost centres' && depIds.length) return names(depIds);
+    return 'Whole company (split by sales)';
   }
 
   var LAST_LOC_KEY = 'fas_last_location';
@@ -643,6 +677,15 @@
       if (!name.value && opts.length === 1) type.value = opts[0].id;
     });
     type.addEventListener('change', function () { if (!name.value && type.value) name.value = listName('Types', type.value); });
+    // A branch's assets carry its brand; the user can still change it.
+    var autoBrand = '';
+    var followLocation = function () {
+      var l = L.Locations.filter(function (x) { return x.id === loc.value; })[0];
+      var b = l && l.Brand ? String(l.Brand) : '';
+      if (!brand.value || brand.value === autoBrand) { brand.value = b; autoBrand = b; }
+    };
+    loc.addEventListener('change', followLocation);
+    followLocation();
     photoInput.addEventListener('change', function () {
       var files = Array.prototype.slice.call(photoInput.files || []);
       photoInput.value = '';
@@ -945,6 +988,15 @@
       Supplier: h('input', { type: 'text', value: a.Supplier || '' }),
       InvoiceNo: h('input', { type: 'text', value: a.InvoiceNo || '' })
     };
+    var ccChosen = String(a.CostCenters || '').split(',').map(function (x) { return x.trim(); }).filter(String);
+    var ccBoxes = (state.lists.CostCenters || []).map(function (c) {
+      var cb = h('input', { type: 'checkbox', value: c.id }); cb.checked = ccChosen.indexOf(c.id) !== -1;
+      return h('label', null, cb, c.name);
+    });
+    var ccWrap = h('details', { class: 'more', open: ccChosen.length ? true : null },
+      h('summary', { text: 'Cost centre exception' }),
+      h('div', { class: 'muted small', text: 'Normally the location or department decides. Tick only to override for this asset.' }),
+      h('div', { class: 'checks' }, ccBoxes));
     var err = h('div');
     var go = h('button', { class: 'btn primary', text: 'Save and confirm' });
     var ov = modal('Values for ' + code, h('div', { class: 'body' }, err,
@@ -952,10 +1004,11 @@
       h('div', { class: 'grid2' }, field('Purchase date', f.PurchaseDate), field('Cost', f.Cost, true)),
       h('div', { class: 'grid2' }, field('Accumulated 31 Dec 2026', f.OpeningAccumDepr), field('Useful life (months)', f.LifeMonths)),
       h('div', { class: 'grid2' }, field('Remaining months', f.RemainingMonths), field('Supplier', f.Supplier)),
-      field('Invoice number', f.InvoiceNo)), go);
+      field('Invoice number', f.InvoiceNo), ccWrap), go);
     go.addEventListener('click', function () {
       var values = { activate: true };
       Object.keys(f).forEach(function (k) { values[k] = f[k].value; });
+      values.CostCenters = ccBoxes.map(function (l) { return l.querySelector('input'); }).filter(function (c) { return c.checked; }).map(function (c) { return c.value; });
       go.disabled = true;
       api('setFinance', { code: code, values: values }).then(function (d) { applySnapshot(d); ov.close(); toast('Saved'); renderMatching(); })
         .catch(function (e) { clear(err); err.appendChild(h('div', { class: 'error', text: e.message })); go.disabled = false; });

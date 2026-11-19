@@ -63,7 +63,11 @@ try:
             pg.wait_for_selector('.drawer')
             fill()
             pg.click('.drawer footer >> text=Create')
-            pg.wait_for_selector('.drawer', state='detached', timeout=5000)
+            try:
+                pg.wait_for_selector('.drawer', state='detached', timeout=5000)
+            except Exception:
+                print('drawer stuck on', table_title, pg.inner_text('.drawer'))
+                raise
 
         def fill_name(name):
             return lambda: pg.fill('.drawer .field:has(label:has-text("Name")) input', name)
@@ -85,6 +89,7 @@ try:
         pg.click('.toolbar >> text=Add')
         pg.fill('.drawer .field:has(label:has-text("Name")) input', 'salwa')
         pg.select_option('.drawer .field:has(label:has-text("Type")) select', 'Branch')
+        pg.select_option('.drawer .field:has(label:has-text("Brand")) select', label="Philly's")
         pg.click('.drawer footer >> text=Create')
         pg.wait_for_selector('.drawer .error >> text=already exists')
         pg.screenshot(path=f'{SHOTS}/03-validation.png')
@@ -129,6 +134,23 @@ try:
 
         # ---------------- phase 2: lists for the form
         add('Departments', fill_name('Kitchen'))
+
+        # Departments: the cost centre list appears only for "Selected cost centres"
+        pg.click('.toolbar >> text=Add')
+        pg.wait_for_selector('.drawer')
+        pg.fill('.drawer .field:has(label:text-is("Name")) input', 'Juice production')
+        assert not pg.is_visible('.drawer .field:has(label:text-is("Cost centres"))')
+        pg.select_option('.drawer .field:has(label:has-text("Depreciation goes to")) select', 'Selected cost centres')
+        pg.wait_for_selector('.drawer .field:has(label:text-is("Cost centres"))')
+        pg.check('.drawer label:has-text("Juiced - b2b - CK") input')
+        pg.screenshot(path=f'{SHOTS}/06b-department-cost-centres.png')
+        pg.click('.drawer footer >> text=Create')
+        pg.wait_for_selector('.drawer', state='detached', timeout=5000)
+        pg.wait_for_selector('table.datatable >> text=Juiced - b2b - CK')
+
+        # Cost centres table is seeded with the Xero tracking options
+        pg.click('.tablist >> text="Cost centres"')
+        pg.wait_for_selector("table.datatable >> text=Philly's - Hawally")
         add('Asset types', lambda: (pg.fill('.drawer .field:has(label:has-text("Name")) input', 'Oven'),
                                     pg.select_option('.drawer .field:has(label:has-text("Category")) select', label='Kitchen equipment')))
         def fill_count_user():
@@ -175,7 +197,7 @@ try:
         ct.select_option('.regform .field:has(label:has-text("Category")) select', label='Kitchen equipment')
         ct.select_option('.regform .field:has(label:has-text("Type")) select', label='Oven')
         assert ct.input_value('.regform .field:has(label:has-text("Name")) input') == 'Oven'
-        ct.select_option('.regform .field:has(label:has-text("Location")) select', label='Salwa')
+        ct.select_option('.regform .field:has(label:has-text("Location")) select', label="Philly's - Salwa")
         ct.select_option('.regform .field:has(label:has-text("Department")) select', label='Kitchen')
         ct.select_option('.regform .field:has(label:has-text("Condition")) select', 'Used')
         ct.click('summary >> text=More details')
@@ -200,7 +222,7 @@ try:
         ct.wait_for_selector('.regform')
         ct.select_option('.regform .field:has(label:has-text("Category")) select', label='Kitchen equipment')
         ct.select_option('.regform .field:has(label:has-text("Type")) select', label='Oven')
-        ct.select_option('.regform .field:has(label:has-text("Location")) select', label='Salwa')
+        ct.select_option('.regform .field:has(label:has-text("Location")) select', label="Philly's - Salwa")
         ct.select_option('.regform .field:has(label:has-text("Department")) select', label='Kitchen')
         ct.select_option('.regform .field:has(label:has-text("Condition")) select', 'Used')
         ct.click('text=Register FL-000002')
@@ -231,7 +253,7 @@ try:
         pg.click('button.pick >> text=Shop fit-out')
         pg.click('summary >> text=No physical item')
         pg.select_option('.detail details select >> nth=0', label='Leasehold improvements')
-        pg.select_option('.detail details select >> nth=1', label='Salwa')
+        pg.select_option('.detail details select >> nth=1', label="Philly's - Salwa")
         pg.click('text=Record without label')
         pg.wait_for_selector('.stat:has-text("Lines matched") >> text=2')
 

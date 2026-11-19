@@ -54,7 +54,7 @@ test('token verification is cached', () => {
 test('meta exposes admin tables to admin', () => {
   const r = env.call('t-osama', 'meta');
   assert.deepStrictEqual(Object.keys(r.data.tables).sort(),
-    ['Brands', 'Categories', 'Departments', 'LabelTemplates', 'Locations', 'Makes', 'Settings', 'Types', 'Users', 'XeroBalances']);
+    ['Brands', 'Categories', 'CostCenters', 'Departments', 'LabelTemplates', 'Locations', 'Makes', 'Settings', 'Types', 'Users', 'XeroBalances']);
 });
 
 test('creating locations gives sequential IDs and audit rows', () => {
@@ -70,7 +70,7 @@ test('creating locations gives sequential IDs and audit rows', () => {
 
 test('validation: required, unique, select, ref, number range, formula injection', () => {
   assert.strictEqual(env.call('t-osama', 'save', { table: 'Locations', record: { Type: 'Branch' }, isNew: true }).error.code, 'INVALID');
-  assert.strictEqual(env.call('t-osama', 'save', { table: 'Locations', record: { Name: 'salwa', Type: 'Branch' }, isNew: true }).error.code, 'INVALID');
+  assert.strictEqual(env.call('t-osama', 'save', { table: 'Locations', record: { Name: 'salwa', Type: 'Branch', Brand: 'BRD-001' }, isNew: true }).error.code, 'INVALID');
   assert.strictEqual(env.call('t-osama', 'save', { table: 'Locations', record: { Name: 'X', Type: 'Moon' }, isNew: true }).error.code, 'INVALID');
   assert.strictEqual(env.call('t-osama', 'save', { table: 'Locations', record: { Name: 'Y', Type: 'Branch', Brand: 'BRD-999' }, isNew: true }).error.code, 'INVALID');
   assert.strictEqual(env.call('t-osama', 'save', { table: 'Categories', record: { CategoryId: 'CAT-001', Name: 'Kitchen equipment', AssetKind: 'Tangible', ResidualPct: 150 } }).error.code, 'INVALID');
@@ -151,7 +151,7 @@ test('bootstrap returns meta and every admin table in one call', () => {
   assert.strictEqual(r.data.data.Locations.length, 2);
   assert.strictEqual(r.data.data.Categories.length, 7);
   assert(!('AuditLog' in r.data.data));
-  assert.deepStrictEqual(Object.keys(env.call('t-acc', 'bootstrap').data.data).length, 10);
+  assert.deepStrictEqual(Object.keys(env.call('t-acc', 'bootstrap').data.data).length, 11);
 });
 
 test('table reads come from cache and writes invalidate it', () => {
@@ -360,6 +360,51 @@ test('repairs checkbox filler rows and records without an ID (0.2.1)', () => {
   assert.strictEqual(bad.error.code, 'INVALID');
   assert.strictEqual(e2.call('t-a', 'list', { table: 'Brands' }).data.rows.length, 3);
   assert(e2.sheets.AuditLog.data.some((r) => r[5] === 'repair' || r.indexOf('repair') !== -1));
+});
+
+test('cost centres: same place name for two brands, and where depreciation goes', () => {
+  const e3 = makeEnv();
+  e3.ctx.setup();
+  e3.addToken('t-a', 'osama@foodlabs.com.kw');
+  const call = (a, p) => e3.call('t-a', a, p);
+  const cc = call('list', { table: 'CostCenters' }).data.rows;
+  assert.strictEqual(cc.length, 14);
+  const id = (n) => cc.find((c) => c.Name === n).CostCenterId;
+  call('save', { table: 'Brands', isNew: true, record: { Name: "Philly's" } });
+  call('save', { table: 'Brands', isNew: true, record: { Name: "Smashy's" } });
+  const py = call('save', { table: 'Locations', isNew: true, record: { Name: 'Yarmouk', Type: 'Branch', Brand: 'BRD-001', CostCenterId: id("Philly's - Yarmouk") } });
+  const sy = call('save', { table: 'Locations', isNew: true, record: { Name: 'Yarmouk', Type: 'Branch', Brand: 'BRD-002', CostCenterId: id("Smashy's - Yarmouk") } });
+  assert(py.ok && sy.ok, JSON.stringify(sy));
+  const ck = call('save', { table: 'Locations', isNew: true, record: { Name: 'Central kitchen', Type: 'Central kitchen' } }).data.record;
+  const juice = call('save', { table: 'Departments', isNew: true, record: { Name: 'Juice production', CostAllocation: 'Selected cost centres', CostCenters: [id('Juiced - b2b - CK')] } }).data.record;
+  const cold = call('save', { table: 'Departments', isNew: true, record: { Name: 'Cold rooms', CostAllocation: 'Whole company', CostCenters: [id('Bakery - CK')] } }).data.record;
+  assert.strictEqual(cold.CostCenters, '', 'whole company drops a stray list');
+  assert.strictEqual(call('save', { table: 'Departments', isNew: true, record: { Name: 'Bakery', CostAllocation: 'Selected cost centres' } }).error.code, 'INVALID');
+  const boot = call('bootstrap').data;
+  assert.deepStrictEqual(boot.lists.Locations.map((l) => l.name), ["Philly's - Yarmouk", "Smashy's - Yarmouk", 'Central kitchen']);
+  const t = { Locations: e3.ctx.readTable_('Locations'), Departments: e3.ctx.readTable_('Departments') };
+  const go = (a) => JSON.parse(JSON.stringify(e3.ctx.costCentersFor_(a, t)));
+  assert.deepStrictEqual(go({ LocationId: py.data.record.LocationId, DepartmentId: cold.DepartmentId }), { source: 'Location', whole: false, ids: [id("Philly's - Yarmouk")] });
+  assert.deepStrictEqual(go({ LocationId: ck.LocationId, DepartmentId: juice.DepartmentId }), { source: 'Department', whole: false, ids: [id('Juiced - b2b - CK')] });
+  assert.deepStrictEqual(go({ LocationId: ck.LocationId, DepartmentId: cold.DepartmentId }), { source: 'Department', whole: true, ids: [] });
+  assert.deepStrictEqual(go({ LocationId: ck.LocationId, DepartmentId: cold.DepartmentId, CostCenters: id('Bakery - CK') }), { source: 'Asset', whole: false, ids: [id('Bakery - CK')] });
+});
+
+test('migration adds the cost centre sheet to an existing data sheet', () => {
+  const e4 = makeEnv();
+  e4.ctx.setup();
+  delete e4.sheets.CostCenters;
+  e4.props.DATA_FIX = '0.2.1';
+  const dep = e4.sheets.Departments.data;
+  dep.length = 0; // a 0.2.1 sheet: no cost centre columns yet
+  dep.push(['DepartmentId', 'Name', 'Active', 'UpdatedAt', 'UpdatedBy'], ['DEP-001', 'Accounting', true, '', '']);
+  Object.keys(e4.cache).forEach((k) => delete e4.cache[k]);
+  e4.addToken('t-a', 'osama@foodlabs.com.kw');
+  const boot = e4.call('t-a', 'bootstrap');
+  assert(boot.ok, JSON.stringify(boot));
+  assert.strictEqual(boot.data.lists.CostCenters.length, 14);
+  assert.strictEqual(boot.data.data.Departments[0].CostAllocation, 'Whole company');
+  assert.strictEqual(e4.props.DATA_FIX, '0.2.2');
 });
 
 console.log(`\n${passed} tests passed`);

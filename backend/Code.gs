@@ -10,7 +10,7 @@
  * runs on another origin and cannot send Google cookies.
  */
 
-var APP_VERSION = '0.2.1';
+var APP_VERSION = '0.2.2';
 var TZ = 'Asia/Kuwait';
 
 var ROLES = ['Admin', 'Accounting', 'Management', 'Manager', 'Technician', 'CountTeam'];
@@ -18,6 +18,7 @@ var ROLES = ['Admin', 'Accounting', 'Management', 'Manager', 'Technician', 'Coun
 /** Roles allowed to open the admin page. Only Admin may grant the Admin role. */
 var ADMIN_ROLES = ['Admin', 'Accounting'];
 
+var COST_ALLOCATIONS = ['Whole company', 'Selected cost centres'];
 var LOCATION_TYPES = ['Branch', 'Central kitchen', 'Office', 'Department', 'Warehouse'];
 var ASSET_KINDS = ['Tangible', 'Intangible'];
 var CONDITIONS = ['New', 'Used', 'Damaged'];
@@ -46,11 +47,11 @@ var SCHEMA = {
     title: 'Locations', key: 'LocationId', prefix: 'LOC', admin: true,
     fields: [
       { name: 'LocationId', label: 'ID', type: 'text', keyField: true, readOnly: true },
-      { name: 'Name', label: 'Name', type: 'text', required: true, unique: true },
+      { name: 'Name', label: 'Name', type: 'text', required: true, unique: true, uniqueWith: 'Brand' },
       { name: 'Type', label: 'Type', type: 'select', options: LOCATION_TYPES, required: true },
       { name: 'Brand', label: 'Brand', type: 'ref', table: 'Brands' },
-      { name: 'XeroTracking1', label: 'Xero tracking 1', type: 'text' },
-      { name: 'XeroTracking2', label: 'Xero tracking 2', type: 'text' },
+      { name: 'CostCenterId', label: 'Cost centre', type: 'ref', table: 'CostCenters',
+        help: 'For a branch: all its depreciation goes here. Leave empty for the central kitchen and offices; the department decides.' },
       { name: 'Active', label: 'Active', type: 'bool', defaultValue: true }
     ]
   },
@@ -59,6 +60,11 @@ var SCHEMA = {
     fields: [
       { name: 'DepartmentId', label: 'ID', type: 'text', keyField: true, readOnly: true },
       { name: 'Name', label: 'Name', type: 'text', required: true, unique: true },
+      { name: 'CostAllocation', label: 'Depreciation goes to', type: 'select', options: COST_ALLOCATIONS,
+        required: true, defaultValue: 'Whole company',
+        help: 'Used where the location has no cost centre of its own (central kitchen, offices). Shared amounts are split by each cost centre\'s sales.' },
+      { name: 'CostCenters', label: 'Cost centres', type: 'refs', table: 'CostCenters',
+        help: 'Only for "Selected cost centres".' },
       { name: 'Active', label: 'Active', type: 'bool', defaultValue: true }
     ]
   },
@@ -67,6 +73,15 @@ var SCHEMA = {
     fields: [
       { name: 'BrandId', label: 'ID', type: 'text', keyField: true, readOnly: true },
       { name: 'Name', label: 'Name', type: 'text', required: true, unique: true },
+      { name: 'Active', label: 'Active', type: 'bool', defaultValue: true }
+    ]
+  },
+  CostCenters: {
+    title: 'Cost centres', key: 'CostCenterId', prefix: 'CC', admin: true,
+    fields: [
+      { name: 'CostCenterId', label: 'ID', type: 'text', keyField: true, readOnly: true },
+      { name: 'Name', label: 'Name in Xero', type: 'text', required: true, unique: true,
+        help: 'Exactly as the tracking option is written in Xero.' },
       { name: 'Active', label: 'Active', type: 'bool', defaultValue: true }
     ]
   },
@@ -165,6 +180,7 @@ var SCHEMA = {
       { name: 'RemainingMonths', label: 'Remaining months at 1 Jan 2027', type: 'number', finance: true },
       { name: 'Supplier', label: 'Supplier', type: 'text', finance: true },
       { name: 'InvoiceNo', label: 'Invoice number', type: 'text', finance: true },
+      { name: 'CostCenters', label: 'Cost centres (exception)', type: 'refs', table: 'CostCenters', finance: true },
       { name: 'MatchedAt', label: 'Matched at', type: 'text', finance: true },
       { name: 'MatchedBy', label: 'Matched by', type: 'text', finance: true }
     ]
@@ -200,6 +216,14 @@ var DEFAULT_SETTINGS = [
   ['WarrantyAlertDays', '', 'Days before warranty end to send an alert'],
   ['CountTeamOpen', 'FALSE', 'TRUE while the count team may register assets on blank labels'],
   ['PhotoFolderId', '', 'Drive folder for asset photos (filled automatically)']
+];
+
+/** Cost centres as they are written in Xero, seeded once; edit or add more in admin. */
+var SEED_COST_CENTERS = [
+  'Boba - Salmiya', 'Boba - Sharq', 'Boba - Avenues', 'Boba - Qurain',
+  "Philly's - Yarmouk", "Philly's - Salwa", "Philly's - The Lake", "Philly's - Hawally",
+  "Smashy's - Yarmouk", 'Juiced - CK', 'Juiced - Coop - CK', 'Juiced - b2b - CK',
+  'Tiramisu Creamery - CK', 'Bakery - CK'
 ];
 
 var SEED_LABEL_TEMPLATES = [['50 x 25 mm', 50, 25], ['60 x 40 mm', 60, 40]];
@@ -252,6 +276,8 @@ function setup() {
     });
   }
 
+  seedCostCenters_();
+
   if (readTable_('Categories').length === 0) {
     SEED_CATEGORIES.forEach(function (c, i) {
       appendRow_('Categories', {
@@ -265,6 +291,13 @@ function setup() {
   PropertiesService.getScriptProperties().setProperty('DATA_FIX', DATA_FIX_VERSION);
   formatBook_(ss);
   return 'Setup done. Data sheet: ' + ss.getUrl() + ' · Bootstrap admin: ' + props.getProperty('BOOTSTRAP_ADMIN');
+}
+
+function seedCostCenters_() {
+  if (readTableFromSheet_('CostCenters').length) return;
+  SEED_COST_CENTERS.forEach(function (n, i) {
+    appendRow_('CostCenters', { CostCenterId: 'CC-' + pad_(i + 1, 3), Name: n, Active: true, UpdatedAt: now_(), UpdatedBy: 'setup' });
+  });
 }
 
 /** The data spreadsheet: the one in SHEET_ID (standalone script), else the bound one. */
@@ -304,7 +337,7 @@ function formatSheets() {
   return 'Formatted';
 }
 
-var SHEET_ORDER = ['Assets', 'LegacyLines', 'LabelBatches', 'Users', 'Locations', 'Departments', 'Brands',
+var SHEET_ORDER = ['Assets', 'LegacyLines', 'LabelBatches', 'Users', 'Locations', 'Departments', 'Brands', 'CostCenters',
   'Categories', 'Types', 'Makes', 'LabelTemplates', 'XeroBalances', 'Settings', 'AuditLog'];
 var BRAND_GREEN = '#0f5e4b';
 
@@ -492,7 +525,11 @@ function resolveUser_(identity) {
 function publicUser_(u) {
   var ids = splitIds_(u.Locations);
   var names = {};
-  if (ids.length) readTable_('Locations').forEach(function (l) { names[l.LocationId] = l.Name; });
+  if (ids.length) {
+    var brandNames = {};
+    readTable_('Brands').forEach(function (b) { brandNames[b.BrandId] = b.Name; });
+    readTable_('Locations').forEach(function (l) { names[l.LocationId] = locationLabel_(l, brandNames); });
+  }
   return {
     email: u.Email, name: u.Name, role: u.Role,
     locations: ids,
@@ -553,15 +590,48 @@ function lists_() {
       return o;
     });
   }
+  var brandNames = {};
+  readTable_('Brands').forEach(function (b) { brandNames[b.BrandId] = b.Name; });
+  var locations = simple('Locations', ['Type', 'Brand', 'CostCenterId']).map(function (l) {
+    l.baseName = l.name;
+    l.name = locationLabel_(l, brandNames);
+    return l;
+  });
   return {
     Categories: simple('Categories', ['AssetKind']),
     Types: simple('Types', ['CategoryId']),
-    Locations: simple('Locations', ['Type', 'Brand']),
-    Departments: simple('Departments'),
+    Locations: locations,
+    Departments: simple('Departments', ['CostAllocation', 'CostCenters']),
+    CostCenters: simple('CostCenters'),
     Brands: simple('Brands'),
     Makes: simple('Makes', ['Status']),
     LabelTemplates: simple('LabelTemplates', ['WidthMm', 'HeightMm'])
   };
+}
+
+/** "Philly's - Yarmouk": the brand in front, so two brands can share a place name. */
+function locationLabel_(loc, brandNames) {
+  var name = String(loc.Name !== undefined ? loc.Name : loc.name);
+  var b = brandNames[loc.Brand];
+  return b ? b + ' - ' + name : name;
+}
+
+/**
+ * Where an asset's depreciation goes, in order: the asset's own exception,
+ * the location's cost centre (branches), the department's rule (central
+ * kitchen, offices). Shared amounts are later split by each centre's sales.
+ * Returns { source, whole, ids }.
+ */
+function costCentersFor_(asset, t) {
+  var own = splitIds_(asset.CostCenters);
+  if (own.length) return { source: 'Asset', whole: false, ids: own };
+  var loc = findBy_(t.Locations, 'LocationId', asset.LocationId);
+  if (loc && loc.CostCenterId) return { source: 'Location', whole: false, ids: [String(loc.CostCenterId)] };
+  var dep = findBy_(t.Departments, 'DepartmentId', asset.DepartmentId);
+  if (dep && dep.CostAllocation === 'Selected cost centres' && splitIds_(dep.CostCenters).length) {
+    return { source: 'Department', whole: false, ids: splitIds_(dep.CostCenters) };
+  }
+  return { source: dep ? 'Department' : 'Default', whole: true, ids: [] };
 }
 
 function listTable_(user, table) {
@@ -1005,10 +1075,14 @@ function setFinance_(user, code, values) {
     var a = findBy_(assets, 'AssetCode', String(code || '').toUpperCase());
     if (!a) throw appError_('NOT_FOUND', 'Asset not found.');
     var upd = {}, changes = [];
-    ['PurchaseDate', 'Cost', 'OpeningAccumDepr', 'LifeMonths', 'RemainingMonths', 'Supplier', 'InvoiceNo'].forEach(function (k) {
+    ['PurchaseDate', 'Cost', 'OpeningAccumDepr', 'LifeMonths', 'RemainingMonths', 'Supplier', 'InvoiceNo', 'CostCenters'].forEach(function (k) {
       if (values[k] === undefined) return;
       var f = fieldOf_('Assets', k);
       var v = coerce_(f, values[k]);
+      if (k === 'CostCenters') {
+        var known = readTable_('CostCenters').map(function (c) { return String(c.CostCenterId); });
+        splitIds_(v).forEach(function (id) { if (known.indexOf(id) === -1) throw appError_('INVALID', 'Unknown cost centre ' + id + '.'); });
+      }
       if (k === 'PurchaseDate' && v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) throw appError_('INVALID', 'Purchase date must be YYYY-MM-DD.');
       if (normForCompare_(a[k]) !== normForCompare_(v)) { upd[k] = v; changes.push([k, a[k], v]); }
     });
@@ -1100,9 +1174,10 @@ function validate_(def, record, rows, isNew) {
     if (!f.unique || out[f.name] === '') return;
     var clash = rows.some(function (r) {
       return String(r[f.name]).trim().toLowerCase() === String(out[f.name]).toLowerCase() &&
+        (!f.uniqueWith || String(r[f.uniqueWith] || '') === String(out[f.uniqueWith] || '')) &&
         (isNew || String(r[def.key]) !== String(record[def.key]));
     });
-    if (clash) throw appError_('INVALID', f.label + ' "' + out[f.name] + '" already exists.');
+    if (clash) throw appError_('INVALID', f.label + ' "' + out[f.name] + '" already exists' + (f.uniqueWith ? ' for this ' + f.uniqueWith.toLowerCase() : '') + '.');
   });
 
   def.fields.forEach(function (f) {
@@ -1115,6 +1190,10 @@ function validate_(def, record, rows, isNew) {
       if (known.indexOf(id) === -1) throw appError_('INVALID', f.label + ': unknown value ' + id + '.');
     });
   });
+  if (out.CostAllocation === 'Selected cost centres' && splitIds_(out.CostCenters).length === 0) {
+    throw appError_('INVALID', 'Pick at least one cost centre, or choose Whole company.');
+  }
+  if (out.CostAllocation === 'Whole company') out.CostCenters = '';
   return out;
 }
 
@@ -1274,15 +1353,36 @@ function updateRow_(name, rowIndex, obj) {
  * keeps checkboxes on real rows only and gives every record that lacks an ID
  * the next free one. Runs once, on the first request after deploy.
  */
-var DATA_FIX_VERSION = '0.2.1';
+var DATA_FIX_VERSION = '0.2.2';
 function ensureDataFixed_() {
   var props = PropertiesService.getScriptProperties();
   if (props.getProperty('DATA_FIX') === DATA_FIX_VERSION) return;
   withLock_(function () {
     if (props.getProperty('DATA_FIX') === DATA_FIX_VERSION) return;
-    repairSheets_();
+    migrate_();
     props.setProperty('DATA_FIX', DATA_FIX_VERSION);
   });
+}
+
+/** Brings an existing data sheet up to this version. Safe to run more than once. */
+function migrate_() {
+  var ss = book_();
+  var fresh = [];
+  Object.keys(SCHEMA).forEach(function (name) {
+    if (!ss.getSheetByName(name)) fresh.push(name);
+    ensureSheet_(ss, name); // adds new sheets and new columns
+  });
+  repairSheets_();
+  seedCostCenters_();
+  // Departments added before 0.2.2 have no rule yet: whole company.
+  readTableFromSheet_('Departments').forEach(function (d) {
+    if (!d.CostAllocation) updateRow_('Departments', d.__row, { CostAllocation: 'Whole company' });
+  });
+  ['Locations', 'Departments', 'Assets'].concat(fresh).forEach(function (name) {
+    var sh = ss.getSheetByName(name);
+    if (sh) formatSheet_(sh, name);
+  });
+  if (fresh.length) formatBook_(ss);
 }
 
 function repairSheets_() {
