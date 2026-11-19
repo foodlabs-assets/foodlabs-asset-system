@@ -1513,6 +1513,10 @@
     } }));
     if (asset.Status !== 'Under review') acts.appendChild(h('button', { class: 'btn', text: 'Print custody form', onclick: function () { printCustody(asset, null); } }));
     if (acts.childNodes.length) box.appendChild(h('div', { class: 'card' }, acts));
+    if (ctx.nextService) box.appendChild(h('div', { class: 'card small row-between' },
+      h('div', null, h('div', { class: 'strong', text: 'Periodic maintenance every ' + ctx.nextService.everyMonths + ' months' }),
+        h('div', { class: 'muted', text: ctx.nextService.open ? 'A preventive request is open now.' : 'Next due ' + ctx.nextService.date + '. The request opens by itself.' })),
+      statusBadge(ctx.nextService.open ? 'Open' : 'Scheduled')));
     if (ctx.openRequests.length) box.appendChild(workList('Open maintenance', ctx.openRequests, requestRow, ''));
     if (ctx.history.length || ctx.maintenanceCost) {
       box.appendChild(workList('Maintenance history' + (ctx.maintenanceCost !== null && ctx.maintenanceCost !== undefined ? ' · total ' + money(ctx.maintenanceCost) : ''),

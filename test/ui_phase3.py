@@ -34,7 +34,7 @@ try:
     call('osama', 'save', {'table': 'Departments', 'isNew': True, 'record': {'Name': 'Kitchen'}})
     for k, role, locs in [('rima', 'Manager', [L1]), ('sam', 'Manager', [L2]), ('ali', 'Technician', []), ('acc', 'Accounting', [])]:
         call('osama', 'save', {'table': 'Users', 'isNew': True, 'record': {'Email': PEOPLE[k][0], 'Name': PEOPLE[k][1], 'Role': role, 'Locations': locs, 'Active': True}})
-    typ = call('osama', 'save', {'table': 'Types', 'isNew': True, 'record': {'Name': 'Oven', 'CategoryId': 'CAT-001'}})['record']['TypeId']
+    typ = call('osama', 'save', {'table': 'Types', 'isNew': True, 'record': {'Name': 'Oven', 'CategoryId': 'CAT-001', 'ServiceEveryMonths': 6}})['record']['TypeId']
     call('osama', 'createLabelBatch', {'quantity': 10})
     for code, loc in [('FL-000001', L1), ('FL-000002', L1), ('FL-000003', L2)]:
         call('osama', 'register', {'code': code, 'asset': {'Name': 'Combi oven ' + code[-1], 'CategoryId': 'CAT-001', 'TypeId': typ, 'LocationId': loc, 'DepartmentId': 'DEP-001', 'Condition': 'Used', 'SerialNo': 'SN-' + code[-1]}})
@@ -70,6 +70,7 @@ try:
         rima.fill('.scaninput', 'FL-000001'); rima.press('.scaninput', 'Enter')
         rima.wait_for_selector('.assetcard >> text=Combi oven 1')
         assert rima.is_visible('text=Print custody form')
+        rima.wait_for_selector('text=Periodic maintenance every 6 months')
         rima.click('text=Request maintenance')
         rima.select_option('.dialog .field:has(label:has-text("Type")) select', 'Breakdown')
         rima.select_option('.dialog .field:has(label:has-text("Priority")) select', 'Urgent')

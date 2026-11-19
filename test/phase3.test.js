@@ -202,6 +202,28 @@ test('important alerts also go by e-mail; admin switches them in E-mail alerts',
   ok(sam('requestMaintenance', { code: 'FL-000003', request: { Type: 'Other', Description: 'Door' } }));
 });
 
+test('periodic maintenance by asset type: opened automatically when due, once', () => {
+  env.ctx.MailApp.sendEmail = (o) => env.mails.push(o); // mail works again after the quota test
+  ok(admin('save', { table: 'Types', record: { TypeId: TYP, Name: 'Oven', CategoryId: CAT, ServiceEveryMonths: 3, Active: true } }));
+  const ctx1 = ok(admin('lookup', { code: 'FL-000003' })).context;
+  assert.strictEqual(ctx1.nextService.everyMonths, 3);
+  const regDate = env.ctx.readTableFromSheet_('Assets').find((a) => a.AssetCode === 'FL-000003').RegisteredAt.slice(0, 10);
+  const [y, m, d] = regDate.split('-').map(Number);
+  const due = new Date(y, m - 1 + 3, d);
+  assert.strictEqual(ctx1.nextService.date, due.getFullYear() + '-' + String(due.getMonth() + 1).padStart(2, '0') + '-' + String(due.getDate()).padStart(2, '0'));
+  assert.strictEqual(env.ctx.dailyJobs(new Date()).length, 0, 'nothing due today');
+  const later = new Date(); later.setMonth(later.getMonth() + 4);
+  const opened = env.ctx.dailyJobs(later);
+  const active = env.ctx.readTableFromSheet_('Assets').filter((a) => a.Status === 'Active' || a.Status === 'In maintenance').length;
+  assert.strictEqual(opened.length, active);
+  assert.strictEqual(env.ctx.dailyJobs(later).length, 0, 'no duplicate while one is open');
+  const req = env.ctx.readTableFromSheet_('Maintenance').find((r) => r.RequestId === opened[0]);
+  assert.strictEqual(req.Type, 'Preventive'); assert.strictEqual(req.RequestedBy, 'system'); assert.strictEqual(req.Technician, tokens.ali);
+  assert.strictEqual(ok(admin('lookup', { code: req.AssetCode })).asset.Status === 'In maintenance' ? 'x' : 'ok', 'ok', 'preventive keeps the asset in service');
+  assert(ok(admin('lookup', { code: req.AssetCode })).context.nextService.open);
+  assert(env.mails.some((m) => m.to === tokens.ali && /Maintenance due/.test(m.subject)));
+});
+
 test('notifications can be marked read', () => {
   const before = ok(sam('notices'));
   assert(before.unread >= 1);

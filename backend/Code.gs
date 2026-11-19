@@ -28,6 +28,7 @@ var MATCH_STATUSES = ['Unmatched', 'Matched', 'Not found'];
 var MR_STATUSES = ['Open', 'In progress', 'Work done', 'Closed', 'Cancelled'];
 var MR_OUTCOMES = ['Repaired', 'No fault found', 'Needs replacement', 'Could not repair'];
 var MR_PRIORITIES = ['Normal', 'Urgent'];
+var PREVENTIVE = 'Preventive';
 var TR_STATUSES = ['Awaiting receipt', 'Received', 'Cancelled'];
 var COUNT_STATUSES = ['Open', 'Finished', 'Cancelled'];
 
@@ -112,6 +113,8 @@ var SCHEMA = {
       { name: 'TypeId', label: 'ID', type: 'text', keyField: true, readOnly: true },
       { name: 'Name', label: 'Name', type: 'text', required: true },
       { name: 'CategoryId', label: 'Category', type: 'ref', table: 'Categories', required: true },
+      { name: 'ServiceEveryMonths', label: 'Periodic maintenance every (months)', type: 'number', min: 0, max: 60,
+        help: 'Leave empty for none. A preventive maintenance request is opened automatically when it falls due.' },
       { name: 'Active', label: 'Active', type: 'bool', defaultValue: true }
     ]
   },
@@ -441,13 +444,6 @@ function ensureSheet_(ss, name) {
     sh.protect().setDescription('Written by the Foodlabs Asset System app').setWarningOnly(true);
   }
   return sh;
-}
-
-/** Run once from the editor after the e-mail alerts arrive: it asks for the mail permission and sends you a test. */
-function testEmail() {
-  var me = Session.getEffectiveUser().getEmail();
-  MailApp.sendEmail(me, 'Foodlabs Assets: test e-mail', 'E-mail alerts from the Foodlabs asset system work.');
-  return 'Test e-mail sent to ' + me;
 }
 
 /** Run from the editor to re-apply the look of the data sheet without touching data. */
@@ -1476,6 +1472,7 @@ function assetContext_(user, asset) {
     canTransfer: !tr && (asset.Status === 'Active' || asset.Status === 'In maintenance') && canActOnAsset_(user, asset),
     canReceive: !!tr && (isAdmin_(user) || mine.indexOf(String(tr.ToLocationId)) !== -1),
     canCancelTransfer: !!tr && (isAdmin_(user) || tr.RequestedBy === user.Email),
+    nextService: nextServiceDue_(asset),
     maintenanceCost: fin ? round3_(reqs.reduce(function (s, r) { return s + (r.Status === 'Closed' ? Number(r.Cost) || 0 : 0); }, 0)) : null
   };
   return ctx;
@@ -1558,7 +1555,8 @@ function requestMaintenance_(user, code, input, photos) {
       RequestedAt: now_(), RequestedBy: user.Email, UpdatedAt: now_(), UpdatedBy: user.Email };
     appendRow_('Maintenance', rec);
     audit_(user.Email, 'Maintenance', id, 'create', '', '', asset.AssetCode + ' ' + type);
-    setAssetStatus_(user, asset.AssetCode, 'In maintenance', id);
+    // Preventive work does not take the asset out of service; a breakdown does.
+    if (type !== PREVENTIVE) setAssetStatus_(user, asset.AssetCode, 'In maintenance', id);
     var link = '#/maintenance/' + id;
     var what = id + ': ' + asset.Name + ' at ' + locName_(asset.LocationId) + (priority === 'Urgent' ? ' (urgent)' : '');
     if (tech) notify_(tech, 'New maintenance request ' + what, link, 'MaintenanceNew');
@@ -1873,6 +1871,82 @@ function countScans_(user, id, codes, finish) {
     var fresh = findBy_(readTableFromSheet_('Counts'), 'CountId', c.CountId);
     return { results: results, count: countView_(fresh, finish) };
   });
+}
+
+// ----- Periodic maintenance and other daily jobs
+
+function parseDate_(s) {
+  var m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
+function addMonths_(d, n) {
+  var out = new Date(d.getFullYear(), d.getMonth() + n, d.getDate());
+  if (out.getDate() !== d.getDate()) out.setDate(0); // 31 Jan + 1 month = 28/29 Feb
+  return out;
+}
+function ymd_(d) { return d.getFullYear() + '-' + pad_(d.getMonth() + 1, 2) + '-' + pad_(d.getDate(), 2); }
+
+/** Next preventive maintenance date: months after the last preventive request, or after registration. */
+function nextServiceDue_(asset) {
+  var type = findBy_(readTable_('Types'), 'TypeId', asset.TypeId);
+  var every = type ? Number(type.ServiceEveryMonths) || 0 : 0;
+  if (!every || ['Disposed', 'Under review', 'Missing'].indexOf(asset.Status) !== -1) return null;
+  var last = readTable_('Maintenance').filter(function (r) {
+    return r.AssetCode === asset.AssetCode && r.Type === PREVENTIVE && r.Status !== 'Cancelled';
+  }).map(function (r) { return String(r.RequestedAt); }).sort().pop();
+  var base = parseDate_(last || asset.RegisteredAt || asset.MatchedAt);
+  if (!base) return null;
+  var open = readTable_('Maintenance').some(function (r) {
+    return r.AssetCode === asset.AssetCode && r.Type === PREVENTIVE && ['Open', 'In progress'].indexOf(r.Status) !== -1;
+  });
+  return { date: ymd_(addMonths_(base, every)), everyMonths: every, open: open };
+}
+
+/**
+ * Runs every morning (installed by enableAutomation). Opens a preventive maintenance
+ * request for every asset whose type is due, unless one is already open.
+ */
+function dailyJobs(today) {
+  // Triggers pass an event object; tests pass a date.
+  today = today && typeof today.getTime === 'function' ? new Date(today.getTime()) : new Date();
+  var system = { Email: 'system', Role: 'Admin', Locations: '' };
+  var done = [];
+  withLock_(function () {
+    var types = {};
+    readTable_('Types').forEach(function (t) { if (Number(t.ServiceEveryMonths) > 0) types[t.TypeId] = Number(t.ServiceEveryMonths); });
+    if (!Object.keys(types).length) return;
+    readTableFromSheet_('Assets').forEach(function (a) {
+      if (!types[a.TypeId] || a.Status !== 'Active' && a.Status !== 'In maintenance') return;
+      var due = nextServiceDue_(a);
+      if (!due || due.open || parseDate_(due.date) > today) return;
+      var rows = readTableFromSheet_('Maintenance');
+      var id = nextId_(rows, 'RequestId', 'MR');
+      var tech = defaultTechnician_();
+      appendRow_('Maintenance', { RequestId: id, AssetCode: a.AssetCode, LocationId: a.LocationId, Type: PREVENTIVE, Priority: 'Normal',
+        Description: 'Periodic maintenance, every ' + due.everyMonths + ' months (due ' + due.date + ').', Photos: '', Technician: tech,
+        Status: 'Open', RequestedAt: now_(), RequestedBy: 'system', UpdatedAt: now_(), UpdatedBy: 'system' });
+      audit_('system', 'Maintenance', id, 'create', '', '', a.AssetCode + ' periodic maintenance');
+      var what = id + ': periodic maintenance of ' + a.Name + ' at ' + locName_(a.LocationId);
+      var to = tech ? [tech] : maintenanceBackups_();
+      notify_((to.length ? to : usersWithRole_(['Admin'])).concat(managersOf_(a.LocationId)), 'Maintenance due ' + what, '#/maintenance/' + id, 'MaintenanceNew');
+      done.push(id);
+    });
+  });
+  return done;
+}
+
+/**
+ * Run once from the editor by the owner: asks for the mail and scheduling permissions,
+ * installs the daily job (about 7 am Kuwait time) and sends a test e-mail.
+ */
+function enableAutomation() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'dailyJobs') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('dailyJobs').timeBased().everyDays(1).atHour(7).inTimezone(TZ).create();
+  var me = Session.getEffectiveUser().getEmail();
+  MailApp.sendEmail(me, 'Foodlabs Assets: automation is on', 'The daily jobs of the Foodlabs asset system are installed and e-mail alerts work.');
+  return 'Daily jobs installed; test e-mail sent to ' + me;
 }
 
 /** Someone at the location found a missing asset outside a count. */
