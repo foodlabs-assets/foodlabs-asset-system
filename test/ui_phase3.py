@@ -34,7 +34,6 @@ try:
     call('osama', 'save', {'table': 'Departments', 'isNew': True, 'record': {'Name': 'Kitchen'}})
     for k, role, locs in [('rima', 'Manager', [L1]), ('sam', 'Manager', [L2]), ('ali', 'Technician', []), ('acc', 'Accounting', [])]:
         call('osama', 'save', {'table': 'Users', 'isNew': True, 'record': {'Email': PEOPLE[k][0], 'Name': PEOPLE[k][1], 'Role': role, 'Locations': locs, 'Active': True}})
-    call('osama', 'save', {'table': 'Categories', 'record': {'CategoryId': 'CAT-001', 'Name': 'Kitchen equipment', 'AssetKind': 'Tangible', 'DefaultTechnician': PEOPLE['ali'][0], 'Active': True}})
     typ = call('osama', 'save', {'table': 'Types', 'isNew': True, 'record': {'Name': 'Oven', 'CategoryId': 'CAT-001'}})['record']['TypeId']
     call('osama', 'createLabelBatch', {'quantity': 10})
     for code, loc in [('FL-000001', L1), ('FL-000002', L1), ('FL-000003', L2)]:
@@ -162,11 +161,10 @@ try:
         adm.goto('http://localhost:%s/index.html#/scan/FL-000001' % PORT_S)
         adm.wait_for_selector('text=Maintenance history · total 35.250')
         adm.screenshot(path=f'{SHOTS}/p3-10-admin-asset.png', full_page=True)
-        # Default technician field on a category lists technicians only
-        adm.goto('http://localhost:%s/index.html#/admin/Categories' % PORT_S)
-        adm.click('table.datatable >> text=Kitchen equipment')
-        opts = adm.eval_on_selector_all('.drawer .field:has(label:has-text("Default technician")) option', 'os => os.map(o => o.textContent)')
-        assert opts == ['—', 'Ali Tech'], opts
+        # Users form has the backup switch for area and operations managers
+        adm.goto('http://localhost:%s/index.html#/admin/Users' % PORT_S)
+        adm.click('table.datatable >> text=rima@foodlabs.com.kw')
+        adm.wait_for_selector('.drawer >> text=Gets maintenance requests when there is no technician')
         browser.close()
     real = [e for e in errors if 'favicon' not in e]
     print('console errors:', real)

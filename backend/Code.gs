@@ -44,6 +44,8 @@ var SCHEMA = {
       { name: 'Name', label: 'Name', type: 'text', required: true },
       { name: 'Role', label: 'Role', type: 'select', options: ROLES, required: true },
       { name: 'Locations', label: 'Assigned locations', type: 'refs', table: 'Locations' },
+      { name: 'MaintenanceBackup', label: 'Gets maintenance requests when there is no technician', type: 'bool',
+        help: 'For example the area manager and the operations manager. They can record the work or pass it to a technician.' },
       { name: 'DashboardAccess', label: 'Dashboard access', type: 'bool' },
       { name: 'Active', label: 'Active', type: 'bool', defaultValue: true }
     ]
@@ -57,8 +59,6 @@ var SCHEMA = {
       { name: 'Brand', label: 'Brand', type: 'ref', table: 'Brands' },
       { name: 'CostCenterId', label: 'Cost centre', type: 'ref', table: 'CostCenters',
         help: 'For a branch: all its depreciation goes here. Leave empty for the central kitchen and offices; the department decides.' },
-      { name: 'DefaultTechnician', label: 'Default technician', type: 'ref', table: 'Users', refFilter: { Role: 'Technician' },
-        help: 'Used for maintenance requests when the asset\'s category has no technician of its own.' },
       { name: 'Active', label: 'Active', type: 'bool', defaultValue: true }
     ]
   },
@@ -103,8 +103,6 @@ var SCHEMA = {
       { name: 'AssetAccount', label: 'Asset account', type: 'text' },
       { name: 'DeprExpenseAccount', label: 'Depreciation expense account', type: 'text' },
       { name: 'AccumDeprAccount', label: 'Accumulated depreciation account', type: 'text' },
-      { name: 'DefaultTechnician', label: 'Default technician', type: 'ref', table: 'Users', refFilter: { Role: 'Technician' },
-        help: 'Maintenance requests for this category go to this technician first. The requester can change it.' },
       { name: 'Active', label: 'Active', type: 'bool', defaultValue: true }
     ]
   },
@@ -690,13 +688,13 @@ function lists_() {
   }
   var brandNames = {};
   readTable_('Brands').forEach(function (b) { brandNames[b.BrandId] = b.Name; });
-  var locations = simple('Locations', ['Type', 'Brand', 'CostCenterId', 'DefaultTechnician']).map(function (l) {
+  var locations = simple('Locations', ['Type', 'Brand', 'CostCenterId']).map(function (l) {
     l.baseName = l.name;
     l.name = locationLabel_(l, brandNames);
     return l;
   });
   return {
-    Categories: simple('Categories', ['AssetKind', 'DefaultTechnician']),
+    Categories: simple('Categories', ['AssetKind']),
     Types: simple('Types', ['CategoryId']),
     Locations: locations,
     Departments: simple('Departments', ['CostAllocation', 'CostCenters']),
@@ -1371,6 +1369,7 @@ function work_(user) {
     var take = false;
     if (user.Role === 'Technician') take = String(r.Technician).toLowerCase() === user.Email && r.Status !== 'Work done';
     else if (isAdmin_(user)) take = true;
+    else if (isBackup_(user)) take = true;
     else if (user.Role === 'Manager') take = mine.indexOf(String(r.LocationId)) !== -1;
     else if (user.Role === 'Management') take = true;
     if (take) out.maintenance.push(maintenanceView_(r, fin));
@@ -1411,7 +1410,7 @@ function assetContext_(user, asset) {
 // ----- Maintenance
 
 function canSeeRequest_(user, r) {
-  if (isFinance_(user)) return true;
+  if (isFinance_(user) || isBackup_(user)) return true;
   if (user.Role === 'Technician') return String(r.Technician).toLowerCase() === user.Email;
   if (r.RequestedBy === user.Email) return true;
   return myLocations_(user).indexOf(String(r.LocationId)) !== -1;
@@ -1431,13 +1430,17 @@ function maintenanceView_(r, finance) {
   out.RequestedByName = userName_(r.RequestedBy);
   return out;
 }
-function defaultTechnician_(asset) {
-  var cat = findBy_(readTable_('Categories'), 'CategoryId', asset.CategoryId);
-  if (cat && cat.DefaultTechnician) return String(cat.DefaultTechnician).toLowerCase();
-  var loc = findBy_(readTable_('Locations'), 'LocationId', asset.LocationId);
-  if (loc && loc.DefaultTechnician) return String(loc.DefaultTechnician).toLowerCase();
-  return '';
+/** The company technician: the active user with the Technician role (the first, if there are several). */
+function defaultTechnician_() {
+  var t = readTable_('Users').filter(function (u) { return u.Role === 'Technician' && truthy_(u.Active); })[0];
+  return t ? String(t.Email).toLowerCase() : '';
 }
+/** People who take requests when there is no technician (area manager, operations manager). */
+function maintenanceBackups_() {
+  return readTable_('Users').filter(function (u) { return truthy_(u.MaintenanceBackup) && truthy_(u.Active); })
+    .map(function (u) { return String(u.Email).toLowerCase(); });
+}
+function isBackup_(user) { return truthy_(user.MaintenanceBackup); }
 function checkTechnician_(email) {
   email = String(email || '').trim().toLowerCase();
   if (!email) return '';
@@ -1470,7 +1473,7 @@ function requestMaintenance_(user, code, input, photos) {
   var desc = longText_('Description', input.Description, 1000);
   if (!desc) throw appError_('INVALID', 'Describe the problem.');
   var priority = MR_PRIORITIES.indexOf(input.Priority) !== -1 ? input.Priority : 'Normal';
-  var tech = input.Technician ? checkTechnician_(input.Technician) : defaultTechnician_(asset);
+  var tech = input.Technician ? checkTechnician_(input.Technician) : defaultTechnician_();
   if (photos.length > 4) throw appError_('INVALID', 'Up to 4 photos.');
   return withLock_(function () {
     var rows = readTableFromSheet_('Maintenance');
@@ -1484,7 +1487,10 @@ function requestMaintenance_(user, code, input, photos) {
     var link = '#/maintenance/' + id;
     var what = id + ': ' + asset.Name + ' at ' + locName_(asset.LocationId) + (priority === 'Urgent' ? ' (urgent)' : '');
     if (tech) notify_(tech, 'New maintenance request ' + what, link);
-    else notify_(usersWithRole_(['Admin']), 'Maintenance request ' + what + ' has no technician. Assign one.', link);
+    else {
+      var backups = maintenanceBackups_();
+      notify_(backups.length ? backups : usersWithRole_(['Admin']), 'New maintenance request ' + what + ' (no technician): please arrange it.', link);
+    }
     return { request: maintenanceView_(rec, isFinance_(user)) };
   });
 }
@@ -1505,11 +1511,13 @@ function maintenanceDetail_(user, id) {
 }
 function maintenanceCan_(user, r) {
   var isTech = user.Role === 'Technician' && String(r.Technician).toLowerCase() === user.Email;
+  // With no technician on it, the backups (area and operations managers) handle the request.
+  var handles = isTech || isAdmin_(user) || (isBackup_(user) && !r.Technician);
   var active = ['Open', 'In progress'].indexOf(r.Status) !== -1;
   return {
-    start: (isTech || isAdmin_(user)) && r.Status === 'Open',
-    workDone: (isTech || isAdmin_(user)) && active,
-    assign: isAdmin_(user) && active,
+    start: handles && r.Status === 'Open',
+    workDone: handles && active,
+    assign: (isAdmin_(user) || isBackup_(user)) && active,
     close: user.Role === 'Accounting' || user.Role === 'Admin' ? r.Status === 'Work done' : false,
     cancel: (isAdmin_(user) || (r.RequestedBy === user.Email && r.Status === 'Open')) && active
   };
@@ -1529,7 +1537,7 @@ function updateMaintenance_(user, id, step, values, files) {
       if (!can.start) throw appError_('FORBIDDEN', 'You cannot start this request.');
       upd.Status = 'In progress';
     } else if (step === 'assign') {
-      if (!can.assign) throw appError_('FORBIDDEN', 'Only admin can reassign.');
+      if (!can.assign) throw appError_('FORBIDDEN', 'Only admin or the operations managers can reassign.');
       upd.Technician = checkTechnician_(values.Technician);
       if (!upd.Technician) throw appError_('INVALID', 'Pick a technician.');
     } else if (step === 'workDone') {

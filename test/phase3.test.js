@@ -8,12 +8,13 @@ function test(name, fn) { fn(); passed++; console.log('ok -', name); }
 const env = makeEnv();
 env.ctx.setup();
 const tokens = {
+  ops: 'ops@foodlabs.com.kw', area: 'area@foodlabs.com.kw',
   admin: 'osama@foodlabs.com.kw', rima: 'rima@foodlabs.com.kw', sam: 'sam@foodlabs.com.kw',
   ali: 'ali@foodlabs.com.kw', acc: 'acc@foodlabs.com.kw', count: 'count@foodlabs.com.kw'
 };
 Object.keys(tokens).forEach((k) => env.addToken('t-' + k, tokens[k]));
 const as = (who) => (action, payload) => env.call('t-' + who, action, payload);
-const admin = as('admin'), rima = as('rima'), sam = as('sam'), ali = as('ali'), acc = as('acc'), count = as('count');
+const ops = as('ops'), area = as('area'), admin = as('admin'), rima = as('rima'), sam = as('sam'), ali = as('ali'), acc = as('acc'), count = as('count');
 const ok = (r) => { assert(r.ok, JSON.stringify(r)); return r.data; };
 const pdf = 'data:application/pdf;base64,' + Buffer.from('%PDF-1.4 invoice').toString('base64');
 const jpg = 'data:image/jpeg;base64,' + Buffer.from('fakejpeg').toString('base64');
@@ -27,9 +28,6 @@ test('set up locations, people and three active assets', () => {
   DEP = ok(admin('save', { table: 'Departments', isNew: true, record: { Name: 'Kitchen' } })).record.DepartmentId;
   [['rima', 'Manager', [L1]], ['sam', 'Manager', [L2]], ['ali', 'Technician', []], ['acc', 'Accounting', []], ['count', 'CountTeam', []]]
     .forEach(([k, role, locs]) => ok(admin('save', { table: 'Users', isNew: true, record: { Email: tokens[k], Name: k, Role: role, Locations: locs, Active: true } })));
-  // A category may only point at a technician.
-  assert.strictEqual(admin('save', { table: 'Categories', record: { CategoryId: 'CAT-001', Name: 'Kitchen equipment', AssetKind: 'Tangible', DefaultTechnician: tokens.rima, Active: true } }).error.code, 'INVALID');
-  ok(admin('save', { table: 'Categories', record: { CategoryId: 'CAT-001', Name: 'Kitchen equipment', AssetKind: 'Tangible', DefaultTechnician: tokens.ali, Active: true } }));
   CAT = 'CAT-001';
   TYP = ok(admin('save', { table: 'Types', isNew: true, record: { Name: 'Oven', CategoryId: CAT } })).record.TypeId;
   ok(admin('createLabelBatch', { quantity: 10 }));
@@ -44,7 +42,7 @@ test('set up locations, people and three active assets', () => {
 });
 
 let MR;
-test('a manager asks for maintenance; it goes straight to the category technician', () => {
+test('a manager asks for maintenance; it goes straight to the company technician', () => {
   assert.strictEqual(rima('requestMaintenance', { code: 'FL-000003', request: { Type: 'Breakdown', Description: 'x' } }).error.code, 'FORBIDDEN');
   assert.strictEqual(rima('requestMaintenance', { code: 'FL-000001', request: { Type: 'Nonsense', Description: 'x' } }).error.code, 'INVALID');
   assert.strictEqual(rima('requestMaintenance', { code: 'FL-000001', request: { Type: 'Breakdown', Description: '' } }).error.code, 'INVALID');
@@ -165,6 +163,28 @@ test('notifications can be marked read', () => {
   assert(before.unread >= 1);
   const after = ok(sam('readNotices', { ids: 'all' }));
   assert.strictEqual(after.unread, 0);
+});
+
+test('with no technician, the area and operations managers get the request and handle it', () => {
+  ok(admin('save', { table: 'Users', isNew: true, record: { Email: tokens.ops, Name: 'Ops', Role: 'Management', MaintenanceBackup: true, Active: true } }));
+  ok(admin('save', { table: 'Users', isNew: true, record: { Email: tokens.area, Name: 'Area', Role: 'Manager', Locations: [L1, L2], MaintenanceBackup: true, Active: true } }));
+  ok(admin('save', { table: 'Users', record: { Email: tokens.ali, Name: 'ali', Role: 'Technician', Locations: [], Active: false } }));
+  const before = ok(ops('notices')).unread;
+  const r = ok(rima('requestMaintenance', { code: 'FL-000001', request: { Type: 'Breakdown', Description: 'Fan noise' } })).request;
+  assert.strictEqual(r.Technician, '');
+  assert.strictEqual(ok(ops('notices')).unread, before + 1);
+  assert(/no technician/.test(ok(area('notices')).items[0].text));
+  assert.strictEqual(ok(admin('notices')).items[0].text.indexOf('Fan noise'), -1, 'admins are not told when backups exist');
+  assert(ok(ops('work')).maintenance.some((x) => x.RequestId === r.RequestId));
+  const d = ok(area('maintenance', { id: r.RequestId }));
+  assert(d.can.start && d.can.workDone && d.can.assign);
+  ok(area('updateMaintenance', { id: r.RequestId, step: 'workDone', values: { WorkNotes: 'Outside company cleaned the fan', Outcome: 'Repaired' } }));
+  // Once a technician is back, new requests go to him and backups no longer record the work.
+  ok(admin('save', { table: 'Users', record: { Email: tokens.ali, Name: 'ali', Role: 'Technician', Locations: [], Active: true } }));
+  const r2 = ok(rima('requestMaintenance', { code: 'FL-000001', request: { Type: 'Breakdown', Description: 'Again' } })).request;
+  assert.strictEqual(r2.Technician, tokens.ali);
+  const d2 = ok(ops('maintenance', { id: r2.RequestId }));
+  assert(!d2.can.workDone && d2.can.assign);
 });
 
 console.log(`\n${passed} tests passed`);

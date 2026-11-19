@@ -1287,10 +1287,8 @@
     var type = selectEl((L.MaintenanceTypes || []).map(function (t) { return { id: t, name: t }; }), '', { required: true });
     var prio = selectEl([{ id: 'Normal', name: 'Normal' }, { id: 'Urgent', name: 'Urgent' }], 'Normal');
     var desc = textarea('', 1000);
-    var cat = (L.Categories || []).filter(function (c) { return c.id === String(asset.CategoryId); })[0];
-    var loc = (L.Locations || []).filter(function (l) { return l.id === String(asset.LocationId); })[0];
-    var defTech = (cat && cat.DefaultTechnician) || (loc && loc.DefaultTechnician) || '';
-    var tech = selectEl(L.Technicians || [], String(defTech).toLowerCase(), { placeholder: (L.Technicians || []).length ? 'Choose…' : 'No technicians yet' });
+    var techs = L.Technicians || [];
+    var tech = selectEl(techs, techs.length ? techs[0].id : '', { placeholder: techs.length ? 'Choose…' : 'No technician' });
     var pics = filePicker('Add photos', false, true);
     var err = h('div');
     var go = h('button', { class: 'btn primary', text: 'Send request' });
@@ -1298,7 +1296,7 @@
       h('div', { class: 'muted small', text: asset.Name + ' · ' + listName('Locations', asset.LocationId) }),
       h('div', { class: 'grid2' }, field('Type', type, true), field('Priority', prio)),
       field('What is wrong?', desc, true),
-      field('Technician', tech, false, defTech ? 'Filled from the category or location. Change it if needed.' : 'Admin assigns one if left empty.'),
+      techs.length ? field('Technician', tech) : h('div', { class: 'hint', text: 'There is no technician now. The request goes to the area and operations managers.' }),
       field('Photos', pics.el)), go);
     go.addEventListener('click', function () {
       clear(err);
