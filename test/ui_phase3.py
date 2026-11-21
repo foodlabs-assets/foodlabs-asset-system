@@ -172,6 +172,12 @@ try:
         adm.wait_for_selector('.bell .dot')
         adm.goto('http://localhost:%s/index.html#/scan/FL-000001' % PORT_S)
         adm.wait_for_selector('text=Maintenance history · total 35.250')
+        adm.click('text=Add warranty')
+        adm.fill('.dialog input[type=date]', '2027-06-30')
+        adm.fill('.dialog .field:has(label:has-text("Given by")) input', 'Rational Kuwait')
+        adm.click('.dialog >> text=Save')
+        adm.wait_for_selector('dd >> text=until 2027-06-30 · Rational Kuwait')
+        assert adm.is_visible('text=Edit warranty')
         adm.screenshot(path=f'{SHOTS}/p3-10-admin-asset.png', full_page=True)
         # E-mail alerts: a fixed list with an e-mail switch, no Add button
         adm.goto('http://localhost:%s/index.html#/admin/NotificationTypes' % PORT_S)

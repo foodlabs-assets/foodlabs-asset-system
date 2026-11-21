@@ -246,6 +246,27 @@ test('count reminders after 3 months without a count, repeated every two weeks',
   assert.strictEqual(remindersTo('rima'), 2);
 });
 
+test('warranty: accounting records it; accounting, managers and maintenance are alerted 30 days before, once', () => {
+  const ymd = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  const end = new Date(); end.setDate(end.getDate() + 40);
+  assert.strictEqual(rima('setWarranty', { code: 'FL-000001', end: ymd(end), provider: 'Rational' }).error.code, 'FORBIDDEN');
+  assert.strictEqual(acc('setWarranty', { code: 'FL-000001', end: '20/12/2027' }).error.code, 'INVALID');
+  const w = ok(acc('setWarranty', { code: 'FL-000001', end: ymd(end), provider: 'Rational' }));
+  assert.strictEqual(w.asset.WarrantyEnd, ymd(end));
+  assert(w.context.canEditWarranty);
+  assert(!ok(rima('lookup', { code: 'FL-000001' })).context.canEditWarranty);
+  const alerts = (who) => ok(as(who)('notices')).items.filter((n) => /Warranty of/.test(n.text)).length;
+  env.ctx.dailyJobs(new Date());
+  assert.strictEqual(alerts('acc'), 0, '40 days away: not yet');
+  const soon = new Date(); soon.setDate(soon.getDate() + 15);
+  env.ctx.dailyJobs(soon);
+  assert.strictEqual(alerts('acc'), 1); assert.strictEqual(alerts('rima'), 1); assert.strictEqual(alerts('ali'), 1);
+  assert.strictEqual(alerts('sam'), 0, 'other locations are not told');
+  assert(env.mails.some((m) => m.to === tokens.rima && /Warranty of/.test(m.subject)));
+  env.ctx.dailyJobs(soon);
+  assert.strictEqual(alerts('acc'), 1, 'once per warranty date');
+});
+
 test('notifications can be marked read', () => {
   const before = ok(sam('notices'));
   assert(before.unread >= 1);

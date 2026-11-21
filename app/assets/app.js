@@ -645,7 +645,8 @@
       ['Category', listName('Categories', a.CategoryId)], ['Type', listName('Types', a.TypeId)],
       ['Location', listName('Locations', a.LocationId)], ['Department', listName('Departments', a.DepartmentId)],
       ['Brand', listName('Brands', a.BrandId)], ['Make', listName('Makes', a.MakeId)], ['Model', a.Model],
-      ['Serial number', a.SerialNo], ['Condition', a.Condition], ['Notes', a.Notes],
+      ['Serial number', a.SerialNo], ['Condition', a.Condition],
+      ['Warranty', a.WarrantyEnd ? 'until ' + a.WarrantyEnd + (a.WarrantyProvider ? ' · ' + a.WarrantyProvider : '') : ''], ['Notes', a.Notes],
       ['Registered', a.RegisteredAt ? a.RegisteredAt + ' · ' + a.RegisteredBy : '']
     ];
     if (state.user.isFinance) rows = rows.concat([
@@ -1512,6 +1513,7 @@
       transferDialog(asset, function () { loadWork(); refreshAsset(asset.AssetCode, rerender); });
     } }));
     if (asset.Status !== 'Under review') acts.appendChild(h('button', { class: 'btn', text: 'Print custody form', onclick: function () { printCustody(asset, null); } }));
+    if (ctx.canEditWarranty) acts.appendChild(h('button', { class: 'btn', text: asset.WarrantyEnd ? 'Edit warranty' : 'Add warranty', onclick: function () { warrantyDialog(asset, rerender); } }));
     if (acts.childNodes.length) box.appendChild(h('div', { class: 'card' }, acts));
     if (ctx.nextService) box.appendChild(h('div', { class: 'card small row-between' },
       h('div', null, h('div', { class: 'strong', text: 'Periodic maintenance every ' + ctx.nextService.everyMonths + ' months' }),
@@ -1523,6 +1525,22 @@
         ctx.history, requestRow, 'No closed requests.'));
     }
     return box;
+  }
+  function warrantyDialog(asset, rerender) {
+    var end = h('input', { type: 'date', value: asset.WarrantyEnd || '' });
+    var by = h('input', { type: 'text', maxlength: '120', value: asset.WarrantyProvider || '' });
+    var err = h('div');
+    var go = h('button', { class: 'btn primary', text: 'Save' });
+    var ov = modal('Warranty of ' + asset.AssetCode, h('div', { class: 'body' }, err,
+      h('div', { class: 'muted small', text: asset.Name }),
+      h('div', { class: 'grid2' }, field('Ends on', end), field('Given by', by)),
+      h('div', { class: 'hint', text: 'Accounting, the location\'s managers and maintenance are alerted before it ends. Clear the date to remove it.' })), go);
+    go.addEventListener('click', function () {
+      go.disabled = true;
+      api('setWarranty', { code: asset.AssetCode, end: end.value, provider: by.value })
+        .then(function (d) { ov.close(); toast('Saved'); rerender(d.asset, d.context); })
+        .catch(function (e) { clear(err); err.appendChild(h('div', { class: 'error', text: e.message })); go.disabled = false; });
+    });
   }
   function refreshAsset(code, rerender) {
     api('lookup', { code: code }).then(function (r) { if (r.status === 'registered') rerender(r.asset, r.context); }).catch(function () {});

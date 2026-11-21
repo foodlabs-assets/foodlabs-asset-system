@@ -184,6 +184,8 @@ var SCHEMA = {
       { name: 'RegisteredBy', label: 'Registered by', type: 'text' },
       { name: 'LastCountAt', label: 'Last counted', type: 'text' },
       { name: 'LastCountBy', label: 'Last counted by', type: 'text' },
+      { name: 'WarrantyEnd', label: 'Warranty ends', type: 'text' },
+      { name: 'WarrantyProvider', label: 'Warranty by', type: 'text' },
       { name: 'MissingSince', label: 'Missing since', type: 'text' },
       { name: 'MissingCount', label: 'Missing in count', type: 'text' },
       { name: 'LegacyLineIds', label: 'Old register lines', type: 'text', finance: true },
@@ -304,7 +306,7 @@ var DEFAULT_SETTINGS = [
   ['CutoverDate', '2027-01-01', 'System start date; opening balances are as at the day before'],
   ['LabelPrefix', 'FL', 'Prefix printed before the running asset number'],
   ['CountReminderMonths', '3', 'Months without a finished count before a location\'s managers are reminded (empty = no reminders)'],
-  ['WarrantyAlertDays', '', 'Days before warranty end to send an alert'],
+  ['WarrantyAlertDays', '30', 'Days before a warranty ends to alert accounting, the location\'s managers and maintenance (empty = no alerts)'],
   ['CountTeamOpen', 'FALSE', 'TRUE while the count team may register assets on blank labels'],
   ['PhotoFolderId', '', 'Drive folder for asset photos (filled automatically)'],
   ['AppUrl', 'https://foodlabs-assets.github.io/foodlabs-asset-system/', 'Link to the app used in e-mails'],
@@ -330,7 +332,8 @@ var SEED_NOTIFICATION_TYPES = [
   ['TransferReceived', 'Asset received: to whoever asked for the transfer', false],
   ['CountGaps', 'Count finished with missing assets or assets from other locations: to admin and accounting', true],
   ['MissingFound', 'A missing asset was found again: to admin and accounting', false],
-  ['CountReminder', 'No stock count for the set number of months: to the location\'s managers, repeated every two weeks until counted', true]
+  ['CountReminder', 'No stock count for the set number of months: to the location\'s managers, repeated every two weeks until counted', true],
+  ['WarrantyEnding', 'A warranty ends soon: to accounting, the location\'s managers and the technician (or the area and operations managers)', true]
 ];
 
 var SEED_LABEL_TEMPLATES = [['50 x 25 mm', 50, 25], ['60 x 40 mm', 60, 40]];
@@ -602,6 +605,7 @@ function handle_(req) {
     case 'notices': return notices_(user);
     case 'readNotices': return readNotices_(user, p.ids || []);
     case 'markFound': return markFound_(user, p.code);
+    case 'setWarranty': return setWarranty_(user, p.code, p.end, p.provider);
     default: throw appError_('BAD_REQUEST', 'Unknown action.');
   }
 }
@@ -1469,6 +1473,7 @@ function assetContext_(user, asset) {
     history: reqs.filter(function (r) { return r.Status === 'Closed'; }).slice(-10).reverse().map(function (r) { return maintenanceView_(r, fin); }),
     transfer: tr ? transferView_(tr) : null,
     canRequestMaintenance: asset.Status !== 'Disposed' && asset.Status !== 'Missing' && canActOnAsset_(user, asset),
+    canEditWarranty: user.Role === 'Accounting' || user.Role === 'Admin',
     canMarkFound: asset.Status === 'Missing' && (canActOnAsset_(user, asset) || user.Role === 'CountTeam'),
     canTransfer: !tr && (asset.Status === 'Active' || asset.Status === 'In maintenance') && canActOnAsset_(user, asset),
     canReceive: !!tr && (isAdmin_(user) || mine.indexOf(String(tr.ToLocationId)) !== -1),
@@ -1933,8 +1938,56 @@ function dailyJobs(today) {
       done.push(id);
     });
   });
-  withLock_(function () { countReminders_(today); });
+  withLock_(function () { countReminders_(today); warrantyAlerts_(today); });
   return done;
+}
+
+/** Accounting records the warranty (end date and who gives it), usually from the invoice. */
+function setWarranty_(user, code, end, provider) {
+  requireAccounting_(user);
+  end = String(end || '').trim();
+  if (end && !/^\d{4}-\d{2}-\d{2}$/.test(end)) throw appError_('INVALID', 'Warranty end must be a date.');
+  provider = longText_('Warranty by', provider, 120);
+  return withLock_(function () {
+    var rows = readTableFromSheet_('Assets');
+    var a = findBy_(rows, 'AssetCode', String(code || '').toUpperCase());
+    if (!a) throw appError_('NOT_FOUND', 'Asset not found.');
+    var upd = {};
+    if (normForCompare_(a.WarrantyEnd) !== end) upd.WarrantyEnd = end;
+    if (normForCompare_(a.WarrantyProvider) !== provider) upd.WarrantyProvider = provider;
+    if (Object.keys(upd).length) {
+      upd.UpdatedAt = now_(); upd.UpdatedBy = user.Email;
+      updateRow_('Assets', a.__row, upd);
+      Object.keys(upd).forEach(function (k) {
+        if (k !== 'UpdatedAt' && k !== 'UpdatedBy') audit_(user.Email, 'Assets', a.AssetCode, 'update', k, a[k], upd[k]);
+      });
+    }
+    var fresh = findBy_(readTableFromSheet_('Assets'), 'AssetCode', a.AssetCode);
+    return { asset: assetView_(fresh, isFinance_(user)), context: assetContext_(user, fresh) };
+  });
+}
+
+/** One alert per asset and warranty date, WarrantyAlertDays before it ends. */
+function warrantyAlerts_(today) {
+  var days = Number(setting_('WarrantyAlertDays')) || 0;
+  if (!days) return [];
+  var props = PropertiesService.getScriptProperties();
+  var sent = [];
+  readTable_('Assets').forEach(function (a) {
+    if (!a.WarrantyEnd || a.Status === 'Disposed') return;
+    var end = parseDate_(a.WarrantyEnd);
+    if (!end || end < new Date(today.getFullYear(), today.getMonth(), today.getDate())) return;
+    if ((end - today) > days * 86400000) return;
+    var key = 'WARRANTY_' + a.AssetCode;
+    if (props.getProperty(key) === String(a.WarrantyEnd)) return;
+    var tech = defaultTechnician_();
+    var to = usersWithRole_(['Accounting']).concat(managersOf_(a.LocationId), tech ? [tech] : maintenanceBackups_());
+    notify_(to, 'Warranty of ' + a.Name + ' (' + a.AssetCode + ') at ' + locName_(a.LocationId) + ' ends on ' + a.WarrantyEnd +
+      (a.WarrantyProvider ? ' (' + a.WarrantyProvider + ')' : '') + '. Report any fault before then.', '#/scan/' + a.AssetCode, 'WarrantyEnding');
+    props.setProperty(key, String(a.WarrantyEnd));
+    sent.push(a.AssetCode);
+  });
+  return sent;
 }
 
 /**
@@ -2260,6 +2313,8 @@ function migrate_() {
       Description: DEFAULT_SETTINGS.filter(function (d) { return d[0] === 'CountReminderMonths'; })[0][2] });
     settings = readTableFromSheet_('Settings');
   }
+  var wa = findBy_(settings, 'Key', 'WarrantyAlertDays');
+  if (wa && String(wa.Value) === '') updateRow_('Settings', wa.__row, { Value: '30', Description: DEFAULT_SETTINGS.filter(function (d) { return d[0] === 'WarrantyAlertDays'; })[0][2], UpdatedAt: now_(), UpdatedBy: 'setup' });
   DEFAULT_SETTINGS.forEach(function (d) {
     if (!settings.some(function (r) { return r.Key === d[0]; })) {
       appendRow_('Settings', { Key: d[0], Value: d[1], Description: d[2], UpdatedAt: now_(), UpdatedBy: 'setup' });
