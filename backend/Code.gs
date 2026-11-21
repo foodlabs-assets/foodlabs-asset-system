@@ -303,7 +303,7 @@ var STAMP_COLUMNS = ['UpdatedAt', 'UpdatedBy'];
 var DEFAULT_SETTINGS = [
   ['CutoverDate', '2027-01-01', 'System start date; opening balances are as at the day before'],
   ['LabelPrefix', 'FL', 'Prefix printed before the running asset number'],
-  ['CountReminderDays', '', 'Days between stock-count reminders to managers'],
+  ['CountReminderMonths', '3', 'Months without a finished count before a location\'s managers are reminded (empty = no reminders)'],
   ['WarrantyAlertDays', '', 'Days before warranty end to send an alert'],
   ['CountTeamOpen', 'FALSE', 'TRUE while the count team may register assets on blank labels'],
   ['PhotoFolderId', '', 'Drive folder for asset photos (filled automatically)'],
@@ -329,7 +329,8 @@ var SEED_NOTIFICATION_TYPES = [
   ['TransferSent', 'Asset on its way, waiting for receipt: to the receiving location and admin', true],
   ['TransferReceived', 'Asset received: to whoever asked for the transfer', false],
   ['CountGaps', 'Count finished with missing assets or assets from other locations: to admin and accounting', true],
-  ['MissingFound', 'A missing asset was found again: to admin and accounting', false]
+  ['MissingFound', 'A missing asset was found again: to admin and accounting', false],
+  ['CountReminder', 'No stock count for the set number of months: to the location\'s managers, repeated every two weeks until counted', true]
 ];
 
 var SEED_LABEL_TEMPLATES = [['50 x 25 mm', 50, 25], ['60 x 40 mm', 60, 40]];
@@ -1932,7 +1933,40 @@ function dailyJobs(today) {
       done.push(id);
     });
   });
+  withLock_(function () { countReminders_(today); });
   return done;
+}
+
+/**
+ * Reminds a location's managers when it has had no finished count for CountReminderMonths
+ * (counted from the last finished count, else the last registration there), then every 14 days.
+ */
+function countReminders_(today) {
+  var months = Number(setting_('CountReminderMonths')) || 0;
+  if (!months) return [];
+  var props = PropertiesService.getScriptProperties();
+  var assets = readTable_('Assets');
+  var counts = readTable_('Counts').filter(function (c) { return c.Status === 'Finished'; });
+  var sent = [];
+  readTable_('Locations').forEach(function (loc) {
+    if (!truthy_(loc.Active)) return;
+    var here = assets.filter(function (a) { return String(a.LocationId) === String(loc.LocationId) && a.Status !== 'Disposed'; });
+    if (!here.length) return;
+    var last = counts.filter(function (c) { return String(c.LocationId) === String(loc.LocationId); })
+      .map(function (c) { return String(c.FinishedAt); }).sort().pop() ||
+      here.map(function (a) { return String(a.RegisteredAt || ''); }).sort().pop();
+    var base = parseDate_(last);
+    if (!base || addMonths_(base, months) > today) return;
+    var key = 'COUNT_REMINDER_' + loc.LocationId;
+    var prev = parseDate_(props.getProperty(key));
+    if (prev && prev > base && (today - prev) < 14 * 86400000) return;
+    var to = managersOf_(loc.LocationId);
+    if (!to.length) to = usersWithRole_(['Admin']);
+    notify_(to, 'Stock count due at ' + locName_(loc.LocationId) + ': the last one was on ' + ymd_(base) + '. Start a count in the app.', '#/count', 'CountReminder');
+    props.setProperty(key, ymd_(today));
+    sent.push(loc.LocationId);
+  });
+  return sent;
 }
 
 /**
@@ -2219,6 +2253,13 @@ function migrate_() {
     if (!d.CostAllocation) updateRow_('Departments', d.__row, { CostAllocation: 'Whole company' });
   });
   var settings = readTableFromSheet_('Settings');
+  // 0.3.0: the count reminder is set in months.
+  var oldReminder = findBy_(settings, 'Key', 'CountReminderDays');
+  if (oldReminder && !findBy_(settings, 'Key', 'CountReminderMonths')) {
+    updateRow_('Settings', oldReminder.__row, { Key: 'CountReminderMonths', Value: '3', UpdatedAt: now_(), UpdatedBy: 'setup',
+      Description: DEFAULT_SETTINGS.filter(function (d) { return d[0] === 'CountReminderMonths'; })[0][2] });
+    settings = readTableFromSheet_('Settings');
+  }
   DEFAULT_SETTINGS.forEach(function (d) {
     if (!settings.some(function (r) { return r.Key === d[0]; })) {
       appendRow_('Settings', { Key: d[0], Value: d[1], Description: d[2], UpdatedAt: now_(), UpdatedBy: 'setup' });

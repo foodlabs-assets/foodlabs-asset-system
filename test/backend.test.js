@@ -127,7 +127,7 @@ test('deactivated user is locked out', () => {
 });
 
 test('settings can be edited but not added; unknown table and action rejected', () => {
-  assert(env.call('t-osama', 'save', { table: 'Settings', record: { Key: 'CountReminderDays', Value: '30' } }).ok);
+  assert(env.call('t-osama', 'save', { table: 'Settings', record: { Key: 'CountReminderMonths', Value: '6' } }).ok);
   assert.strictEqual(env.call('t-osama', 'save', { table: 'Settings', record: { Key: 'New', Value: '1' }, isNew: true }).error.code, 'INVALID');
   assert.strictEqual(env.call('t-osama', 'list', { table: 'AuditLog' }).error.code, 'BAD_REQUEST');
   assert.strictEqual(env.call('t-osama', 'drop').error.code, 'BAD_REQUEST');

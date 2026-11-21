@@ -224,6 +224,28 @@ test('periodic maintenance by asset type: opened automatically when due, once', 
   assert(env.mails.some((m) => m.to === tokens.ali && /Maintenance due/.test(m.subject)));
 });
 
+test('count reminders after 3 months without a count, repeated every two weeks', () => {
+  const at = (months, days) => { const d = new Date(); d.setMonth(d.getMonth() + months); d.setDate(d.getDate() + days); return d; };
+  // The periodic-maintenance test above already ran the daily job four months ahead: start clean.
+  Object.keys(env.props).filter((k) => k.startsWith('COUNT_REMINDER_')).forEach((k) => delete env.props[k]);
+  const base = ok(rima('notices')).items.filter((n) => /Stock count due/.test(n.text)).length;
+  const remindersTo = (who) => ok(as(who)('notices')).items.filter((n) => /Stock count due/.test(n.text)).length - base;
+  env.ctx.dailyJobs(at(2, 0));
+  assert.strictEqual(remindersTo('rima'), 0, 'not due before 3 months');
+  env.ctx.dailyJobs(at(4, 0));
+  assert.strictEqual(remindersTo('rima'), 1, 'her location is due');
+  assert(env.mails.some((m) => m.to === tokens.rima && /Stock count due/.test(m.subject)), 'reminders go by e-mail');
+  env.ctx.dailyJobs(at(4, 5));
+  assert.strictEqual(remindersTo('rima'), 1, 'not again within two weeks');
+  env.ctx.dailyJobs(at(4, 16));
+  assert.strictEqual(remindersTo('rima'), 2, 'again after two weeks');
+  // Switching the setting off stops them.
+  const s = env.ctx.readTableFromSheet_('Settings').find((r) => r.Key === 'CountReminderMonths');
+  ok(admin('save', { table: 'Settings', record: { Key: 'CountReminderMonths', Value: '', Description: s.Description } }));
+  env.ctx.dailyJobs(at(6, 0));
+  assert.strictEqual(remindersTo('rima'), 2);
+});
+
 test('notifications can be marked read', () => {
   const before = ok(sam('notices'));
   assert(before.unread >= 1);
